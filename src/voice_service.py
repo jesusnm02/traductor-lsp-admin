@@ -35,6 +35,9 @@ class LSPVoiceService:
         self.last_trigger_time = 0.0
         self.cooldown_seconds = 4.0  # Cooldown para evitar ráfagas
         self.lock = threading.Lock()
+        
+        # Flag de control de contexto: solo activo en la pestaña de captura
+        self.allow_voice_trigger = True
 
     def _ensure_model(self):
         """Carga el modelo ligero en español de forma perezosa (lazy) desde la caché local."""
@@ -46,11 +49,21 @@ class LSPVoiceService:
             self.recognizer.SetWords(True)
 
     def _notify_status(self, msg: str):
-        if self.status_callback:
-            if self.page and hasattr(self.page, "run_thread"):
-                self.page.run_thread(self.status_callback, msg)
-            else:
-                self.status_callback(msg)
+        if self.status_callback and self.is_running.is_set():
+            try:
+                if self.page and hasattr(self.page, "is_active") and not self.page.is_active:
+                    self.stop()
+                    return
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(self.status_callback, msg)
+                else:
+                    self.status_callback(msg)
+            except RuntimeError as re:
+                if "destroyed session" in str(re).lower():
+                    self.stop()
+                    return
+            except Exception:
+                pass
 
     def start(self):
         """Inicia la captura de audio en un hilo de fondo seguro."""
@@ -121,6 +134,10 @@ class LSPVoiceService:
         if not text:
             return
         
+        # Validar contexto estricto: solo si allow_voice_trigger es True
+        if not self.allow_voice_trigger:
+            return
+
         keywords = ["recopila", "recopilar", "recopilalo", "recopilarlo", "recopilame"]
         if any(kw in text for kw in keywords):
             now = time.time()
@@ -128,11 +145,21 @@ class LSPVoiceService:
                 self.last_trigger_time = now
                 self._notify_status("🎤 ¡Palabra clave 'Recopila' detectada!")
                 
-                if self.on_command_detected:
-                    if self.page and hasattr(self.page, "run_thread"):
-                        self.page.run_thread(self.on_command_detected)
-                    else:
-                        threading.Thread(target=self.on_command_detected, daemon=True).start()
+                if self.on_command_detected and self.is_running.is_set():
+                    try:
+                        if self.page and hasattr(self.page, "is_active") and not self.page.is_active:
+                            self.stop()
+                            return
+                        if self.page and hasattr(self.page, "run_thread"):
+                            self.page.run_thread(self.on_command_detected)
+                        else:
+                            threading.Thread(target=self.on_command_detected, daemon=True).start()
+                    except RuntimeError as re:
+                        if "destroyed session" in str(re).lower():
+                            self.stop()
+                            return
+                    except Exception:
+                        pass
                 
                 if self.recognizer:
                     self.recognizer.Reset()

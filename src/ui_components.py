@@ -24,33 +24,59 @@ COLOR_STATUS_BG = "#EBF4FF"       # Azul pastel suave para barra de estado
 COLOR_REC_BTN = "#E25C5C"         # Rojo amigable para grabación
 COLOR_SUCCESS = "#2E7D32"         # Verde pedagógico para éxito
 
+def update_ui_safely(control):
+    """
+    Actualiza un control de Flet capturando excepciones de sesión destruida.
+    Previene el fallo: RuntimeError: An attempt to fetch destroyed session.
+    """
+    try:
+        if control and hasattr(control, "page") and control.page:
+            control.update()
+        elif control and hasattr(control, "update"):
+            control.update()
+    except RuntimeError as e:
+        if "destroyed session" in str(e).lower():
+            # Ignorar de forma segura si la ventana fue cerrada por el docente
+            pass
+    except Exception:
+        pass
+
+# Alias de compatibilidad
+safe_update = update_ui_safely
+
 def show_snack_bar(page: ft.Page, message: str, is_error: bool = False):
-    """Muestra una notificación emergente estilizada con la paleta escolar."""
+    """Muestra una notificación emergente estilizada con la paleta escolar sin crashear si se cierra."""
     def _show():
-        sb = ft.SnackBar(
-            content=ft.Text(message, color=ft.Colors.WHITE, weight=ft.FontWeight.W_500),
-            bgcolor=COLOR_REC_BTN if is_error else COLOR_PRIMARY,
-            open=True
-        )
-        if hasattr(page, "overlay"):
-            page.overlay.append(sb)
         try:
-            page.update()
+            if page and hasattr(page, "is_active") and not page.is_active:
+                return
+            sb = ft.SnackBar(
+                content=ft.Text(message, color=ft.Colors.WHITE, weight=ft.FontWeight.W_500),
+                bgcolor=COLOR_REC_BTN if is_error else COLOR_PRIMARY,
+                open=True
+            )
+            if hasattr(page, "overlay"):
+                page.overlay.append(sb)
+            update_ui_safely(page)
         except Exception:
             pass
 
     if hasattr(page, "run_thread"):
-        page.run_thread(_show)
+        try:
+            page.run_thread(_show)
+        except Exception:
+            pass
     else:
         _show()
 
 class LSPUIController:
     """
-    Controlador central de la interfaz escolar de administración para Traductor LSP.
-    - Renderizado quirúrgico de cámara sin parpadeo (zero flickering).
-    - Activación por voz con comando 'Recopila'.
-    - Panel de configuración dinámica de captura para el docente.
-    - Estética escolar celeste y blanco de alto contraste.
+    Controlador central de la interfaz escolar de administración para Traductor LSP (v4).
+    - Carga estricta y defensiva de modelos Keras (.h5/.keras) y etiquetas JSON sin errores UTF-8.
+    - Protección absoluta contra crashes por sesiones destruidas de Flet (update_ui_safely).
+    - Navegación por pestañas nativas ft.Tabs visible y con prevención de colisiones de cámara.
+    - Lista de palabras en contenedor con scroll vertical de alta fluidez (height=240).
+    - Deslizadores de configuración reubicados en la parte inferior del panel izquierdo.
     """
     def __init__(self, page: ft.Page, data_manager: LSPDataManager, vision_service: LSPVisionService, trainer: LSPTrainer):
         self.page = page
@@ -58,6 +84,9 @@ class LSPUIController:
         self.vision_service = vision_service
         self.trainer = trainer
         self.model_trainer = ModelTrainer(sequence_length=30, features=255)
+
+        # Referencia a pestañas para control de contexto
+        self.tabs = None
 
         # Estados de la UI
         self.selected_category = None
@@ -68,7 +97,12 @@ class LSPUIController:
         self.live_tester = None
         self.is_testing = False
 
-        # Configurar comunicación segura con el servicio de visión
+        # Referencia al diálogo modal de muestras
+        self.current_samples_dialog = None
+        self.current_samples_word = None
+        self.samples_listview = ft.ListView(expand=True, spacing=6, padding=5)
+
+        # Configurar comunicación con el servicio de visión
         self.vision_service.page = page
         self.vision_service.on_frame_callback = self.on_frame_update
         self.vision_service.on_state_changed = self.on_state_changed
@@ -81,108 +115,72 @@ class LSPUIController:
             status_callback=self.on_voice_status_update
         )
 
-        # Construir componentes visuales escolares
+        # Construir controles visuales escolares optimizados
         self._init_controls()
 
-        # Enlazar control de imagen directo para refresco
+        # Enlazar control de imagen directo para refresco quirúrgico
         self.vision_service.video_image_control = self.camera_view
 
     def _init_controls(self):
         # 1. Controles de Categoría
         self.new_category_input = ft.TextField(
             label="Nombre de Categoría",
-            width=210,
-            text_size=13,
-            bgcolor="#FFFFFF",
-            border_color=COLOR_BORDER,
-            focused_border_color=COLOR_PRIMARY,
-            label_style=ft.TextStyle(color=COLOR_TEXT_MUTED),
-            color=COLOR_TEXT_TITLE
-        )
-        self.category_dropdown = ft.Dropdown(
-            label="Categoría de Señas",
-            hint_text="Seleccione categoría",
-            width=260,
+            width=200,
+            text_size=12,
             bgcolor="#FFFFFF",
             border_color=COLOR_BORDER,
             focused_border_color=COLOR_PRIMARY,
             label_style=ft.TextStyle(color=COLOR_TEXT_MUTED),
             color=COLOR_TEXT_TITLE,
+            height=40
+        )
+        self.category_dropdown = ft.Dropdown(
+            label="Categoría de Señas",
+            hint_text="Seleccione categoría",
+            width=250,
+            bgcolor="#FFFFFF",
+            border_color=COLOR_BORDER,
+            focused_border_color=COLOR_PRIMARY,
+            label_style=ft.TextStyle(color=COLOR_TEXT_MUTED),
+            color=COLOR_TEXT_TITLE,
+            height=40,
             on_select=lambda e: self.on_category_changed(e.control.value)
         )
         self.btn_edit_category = ft.IconButton(
             icon=ft.Icons.EDIT,
             tooltip="Editar nombre de categoría",
             icon_color=COLOR_PRIMARY,
+            icon_size=20,
             on_click=self.show_edit_category_dialog
         )
         self.btn_delete_category = ft.IconButton(
             icon=ft.Icons.DELETE_OUTLINE,
             tooltip="Eliminar categoría",
             icon_color=COLOR_REC_BTN,
+            icon_size=20,
             on_click=self.on_delete_category_clicked
         )
 
         # 2. Controles de Vocabulario
         self.new_word_input = ft.TextField(
             label="Nueva Palabra",
-            width=210,
-            text_size=13,
+            width=200,
+            text_size=12,
             bgcolor="#FFFFFF",
             border_color=COLOR_BORDER,
             focused_border_color=COLOR_PRIMARY,
             label_style=ft.TextStyle(color=COLOR_TEXT_MUTED),
-            color=COLOR_TEXT_TITLE
+            color=COLOR_TEXT_TITLE,
+            height=40
         )
-        self.words_listview = ft.ListView(expand=True, spacing=8, padding=5)
-
-        # 3. Visores de Cámara (Entrenamiento y Testing)
-        self.camera_view = ft.Image(
-            src=EMPTY_PIXEL_DATA,
-            width=520,
-            height=390,
-            fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain"
-        )
-        self.test_camera_view = ft.Image(
-            src=EMPTY_PIXEL_DATA,
-            width=520,
-            height=390,
-            fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain"
+        # Lista de palabras con scroll siempre activo ("tipo slider vertical")
+        self.words_listview = ft.ListView(
+            expand=True,
+            scroll=ft.ScrollMode.ALWAYS, # Forzar barra de scroll vertical
+            spacing=10
         )
 
-        self.warning_banner = ft.Container(
-            content=ft.Row([
-                ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=ft.Colors.AMBER_900),
-                ft.Text("⚠️ ADVERTENCIA: Cámara obstruida o baja iluminación.",
-                        color=ft.Colors.AMBER_900, weight=ft.FontWeight.BOLD, size=12)
-            ], alignment=ft.MainAxisAlignment.CENTER),
-            bgcolor="#FEF3C7",
-            padding=8,
-            border_radius=8,
-            border=ft.Border.all(1, "#FCD34D"),
-            visible=False
-        )
-
-        # 4. Modo Escucha por Voz con comando 'Recopila'
-        self.switch_voice = ft.Switch(
-            label="Modo Escucha (Vosk)",
-            value=False,
-            active_color=COLOR_PRIMARY,
-            label_text_style=ft.TextStyle(color=COLOR_TEXT_TITLE, weight=ft.FontWeight.W_500, size=13),
-            on_change=self.toggle_voice_mode,
-            tooltip="Diga 'Recopila' para iniciar la preparación y grabación a manos libres"
-        )
-        self.voice_badge = ft.Container(
-            content=ft.Row([
-                ft.Icon(ft.Icons.MIC_OFF, size=16, color=COLOR_TEXT_MUTED),
-                ft.Text("Voz inactiva", size=11, color=COLOR_TEXT_MUTED)
-            ], spacing=4),
-            padding=ft.Padding(8, 4, 8, 4),
-            bgcolor="#F1F5F9",
-            border_radius=6
-        )
-
-        # 5. Panel de Configuración Dinámica para el Docente (Sliding & Parameters)
+        # 3. Configuración para el Docente (Deslizadores al Fondo)
         self.slider_delay = ft.Slider(
             min=1.0,
             max=5.0,
@@ -192,7 +190,7 @@ class LSPUIController:
             active_color=COLOR_PRIMARY,
             on_change=self.on_teacher_params_changed
         )
-        self.lbl_delay_val = ft.Text("3.0s", size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+        self.lbl_delay_val = ft.Text("3.0s", size=12, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
 
         self.slider_frames = ft.Slider(
             min=20,
@@ -203,7 +201,53 @@ class LSPUIController:
             active_color=COLOR_PRIMARY,
             on_change=self.on_teacher_params_changed
         )
-        self.lbl_frames_val = ft.Text("30 frames", size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+        self.lbl_frames_val = ft.Text("30 frames", size=12, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+
+        # 4. Visores de Cámara (Monitor centrado 480x360)
+        self.camera_view = ft.Image(
+            src=EMPTY_PIXEL_DATA,
+            width=480,
+            height=360,
+            fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain"
+        )
+        self.test_camera_view = ft.Image(
+            src=EMPTY_PIXEL_DATA,
+            width=480,
+            height=360,
+            fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain"
+        )
+
+        self.warning_banner = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=ft.Colors.AMBER_900, size=18),
+                ft.Text("⚠️ ADVERTENCIA: Cámara obstruida o baja iluminación.",
+                        color=ft.Colors.AMBER_900, weight=ft.FontWeight.BOLD, size=12)
+            ], alignment=ft.MainAxisAlignment.CENTER),
+            bgcolor="#FEF3C7",
+            padding=6,
+            border_radius=8,
+            border=ft.Border.all(1, "#FCD34D"),
+            visible=False
+        )
+
+        # 5. Modo Escucha por Voz con comando 'Recopila'
+        self.switch_voice = ft.Switch(
+            label="Modo Escucha (Vosk)",
+            value=False,
+            active_color=COLOR_PRIMARY,
+            label_text_style=ft.TextStyle(color=COLOR_TEXT_TITLE, weight=ft.FontWeight.W_500, size=12),
+            on_change=self.toggle_voice_mode,
+            tooltip="Diga 'Recopila' para iniciar la preparación y grabación a manos libres"
+        )
+        self.voice_badge = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.MIC_OFF, size=15, color=COLOR_TEXT_MUTED),
+                ft.Text("Voz inactiva", size=11, color=COLOR_TEXT_MUTED)
+            ], spacing=4),
+            padding=ft.Padding(6, 3, 6, 3),
+            bgcolor="#F1F5F9",
+            border_radius=6
+        )
 
         # 6. Botones de Acción (Pestaña 1)
         self.btn_camera = ft.Button(
@@ -212,8 +256,8 @@ class LSPUIController:
             bgcolor=COLOR_PRIMARY,
             color=ft.Colors.WHITE,
             on_click=self.toggle_camera,
-            width=200,
-            height=44
+            width=180,
+            height=40
         )
         self.btn_generate_cnn = ft.Button(
             content="Generar Modelo de Categoría",
@@ -222,30 +266,30 @@ class LSPUIController:
             color=ft.Colors.WHITE,
             on_click=self.run_cnn_training_flow,
             disabled=True,
-            width=260,
-            height=44,
+            width=240,
+            height=40,
             tooltip="Habilitado al tener al menos 30 muestras de cada palabra en la categoría"
         )
 
-        # 7. Barra de Estado Escolar
+        # 7. Barra de Estado Escolar (Superior Permanente)
         self.status_text = ft.Text(
             value="Sistema Escolar Listo. Encienda la cámara para comenzar.",
             color=COLOR_TEXT_TITLE,
             size=13,
             weight=ft.FontWeight.W_500
         )
-        self.training_progress = ft.ProgressRing(visible=False, width=18, height=18, stroke_width=2, color=COLOR_PRIMARY)
-        self.training_status_container = ft.Row([self.training_progress, self.status_text], alignment=ft.MainAxisAlignment.START)
+        self.training_progress = ft.ProgressRing(visible=False, width=16, height=16, stroke_width=2, color=COLOR_PRIMARY)
 
-        # 8. Controles de la Pestaña 2 (Pruebas y Validación en Vivo)
+        # 8. Controles de la Pestaña 2: Inferencia en Tiempo Real con Voz y Letras Gigantes
         self.test_category_dropdown = ft.Dropdown(
             label="Modelo por Categoría",
-            hint_text="Seleccione un modelo entrenado",
-            width=280,
+            hint_text="Seleccione modelo binario",
+            width=260,
             bgcolor="#FFFFFF",
             border_color=COLOR_BORDER,
             focused_border_color=COLOR_PRIMARY,
             color=COLOR_TEXT_TITLE,
+            height=40,
             on_select=self.on_test_category_selected
         )
         self.btn_toggle_test = ft.Button(
@@ -254,83 +298,82 @@ class LSPUIController:
             bgcolor=COLOR_SUCCESS,
             color=ft.Colors.WHITE,
             on_click=self.toggle_live_test,
-            width=200,
-            height=44
+            width=180,
+            height=40
         )
+        # Tipografía gigante (size=36, color=#1A365D) para traducción clara
         self.lbl_prediction = ft.Text(
             value="Esperando seña...",
-            size=28,
+            size=36,
             weight=ft.FontWeight.BOLD,
+            color=COLOR_TEXT_TITLE,
+            text_align=ft.TextAlign.CENTER
+        )
+        self.lbl_confidence = ft.Text(
+            value="Confianza: 0%",
+            size=12,
+            weight=ft.FontWeight.W_600,
             color=COLOR_PRIMARY
         )
+        self.progress_bar_prediction = ft.ProgressBar(
+            value=0.0,
+            color=COLOR_PRIMARY,
+            bgcolor=COLOR_STATUS_BG,
+            height=8,
+            border_radius=4,
+            width=360
+        )
         self.test_status_text = ft.Text(
-            value="Seleccione un modelo (.h5) y pulse 'Iniciar Prueba' para validar señas en vivo.",
-            size=13,
+            value="Seleccione un modelo (.h5/.keras) y pulse 'Iniciar Prueba' para validar señas en vivo.",
+            size=12,
             color=COLOR_TEXT_MUTED
         )
 
-        # Cargar categorías y modelos disponibles
+        # Conectar controles de inferencia con vision_service
+        self.vision_service.prediction_label_control = self.lbl_prediction
+        self.vision_service.progress_bar_control = self.progress_bar_prediction
+        self.vision_service.confidence_label_control = self.lbl_confidence
+
+        # Cargar categorías y modelos iniciales
         self.load_categories_to_dropdown()
         self.load_trained_models_to_test_dropdown()
 
-    # --- REFRESCO QUIRÚRGICO DE LA CÁMARA (ZERO FLICKERING) ---
+    # --- REFRESCO DE CÁMARA CON PROTECCIÓN CONTRA DESTROYED SESSION ---
 
     def on_frame_update(self, base64_image: str, is_obstructed: bool = False):
-        """
-        Actualización dirigida exclusivamente sobre los componentes Image de Flet.
-        NUNCA llama a page.update(), eliminando al 100% el parpadeo en pantalla.
-        """
         data_src = f"data:image/jpeg;base64,{base64_image}"
         
-        # 1. Refresco aislado del visor de captura
         self.camera_view.src = data_src
-        try:
-            self.camera_view.update()
-        except Exception:
-            pass
+        update_ui_safely(self.camera_view)
 
-        # 2. Refresco aislado del visor de testing si está en uso
         if hasattr(self, "test_camera_view") and getattr(self.test_camera_view, "visible", True):
             self.test_camera_view.src = data_src
-            try:
-                self.test_camera_view.update()
-            except Exception:
-                pass
+            update_ui_safely(self.test_camera_view)
 
-        # 3. Refresco condicional del banner únicamente al variar su estado
         if self.warning_banner.visible != is_obstructed:
             self.warning_banner.visible = is_obstructed
-            try:
-                self.warning_banner.update()
-            except Exception:
-                pass
+            update_ui_safely(self.warning_banner)
 
     # --- CONFIGURACIÓN DINÁMICA DEL DOCENTE ---
 
     def on_teacher_params_changed(self, e):
-        """Aplica en caliente las nuevas variables de tiempo de espera y frames por seña."""
         delay = float(self.slider_delay.value)
         frames = int(self.slider_frames.value)
 
         self.lbl_delay_val.value = f"{delay:.1f}s"
         self.lbl_frames_val.value = f"{frames} frames"
         
-        # Actualizar máquina de visión en caliente
         self.vision_service.update_params(delay=delay, frames=frames)
 
-        try:
-            self.lbl_delay_val.update()
-            self.lbl_frames_val.update()
-        except Exception:
-            self.page.update()
+        update_ui_safely(self.lbl_delay_val)
+        update_ui_safely(self.lbl_frames_val)
 
-    # --- TRANSICIONES DE LA MÁQUINA DE ESTADOS (DESPACHADAS VÍA RUN_THREAD) ---
+    # --- TRANSICIONES DE LA MÁQUINA DE ESTADOS ---
 
     def on_state_changed(self, state: str, message: str = ""):
-        """Callback invocado por la máquina de estados desde page.run_thread."""
         if state == "Preparacion":
             self.status_text.value = f"⏱️ {message}"
-            self.status_text.color = "#D97706"  # Ámbar suave
+            self.status_text.color = "#D97706"
             self.enable_ui_controls(False)
         elif state == "Grabacion":
             self.status_text.value = f"🔴 {message}"
@@ -343,13 +386,9 @@ class LSPUIController:
             self.status_text.value = f"💾 {message}"
             self.status_text.color = COLOR_PRIMARY
 
-        try:
-            self.status_text.update()
-        except Exception:
-            pass
+        update_ui_safely(self.status_text)
 
     def on_recording_complete(self, category: str, word: str, sequence: list):
-        """Persiste la secuencia en disco y actualiza la UI de manera no bloqueante."""
         try:
             file_path = self.data_manager.save_sequence(category, word, sequence)
             word_dir = self.data_manager._get_word_dir(category, word)
@@ -365,21 +404,17 @@ class LSPUIController:
         self.enable_ui_controls(True)
         self.refresh_words_list()
         self.update_cnn_button_state()
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        update_ui_safely(self.page)
 
-    # --- RECONOCIMIENTO DE VOZ (VOSK) CON COMANDO 'RECOPILA' ---
+    # --- RECONOCIMIENTO DE VOZ (VOSK) CON CONTROL ESTRICTO DE CONTEXTO ---
 
     def toggle_voice_mode(self, e):
-        """Activa o desactiva el hilo de escucha de micrófono con Vosk."""
         if self.switch_voice.value:
             if not self.is_camera_active:
                 self.toggle_camera(None)
 
             self.voice_badge.content = ft.Row([
-                ft.Icon(ft.Icons.MIC, size=16, color=COLOR_SUCCESS),
+                ft.Icon(ft.Icons.MIC, size=15, color=COLOR_SUCCESS),
                 ft.Text("Escuchando...", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.W_600)
             ], spacing=4)
             self.voice_badge.bgcolor = "#DCFCE7"
@@ -388,29 +423,43 @@ class LSPUIController:
         else:
             self.voice_service.stop()
             self.voice_badge.content = ft.Row([
-                ft.Icon(ft.Icons.MIC_OFF, size=16, color=COLOR_TEXT_MUTED),
+                ft.Icon(ft.Icons.MIC_OFF, size=15, color=COLOR_TEXT_MUTED),
                 ft.Text("Voz inactiva", size=11, color=COLOR_TEXT_MUTED)
             ], spacing=4)
             self.voice_badge.bgcolor = "#F1F5F9"
             show_snack_bar(self.page, "Modo Escucha desactivado.")
         
-        try:
-            self.voice_badge.update()
-            self.switch_voice.update()
-        except Exception:
-            self.page.update()
+        update_ui_safely(self.voice_badge)
+        update_ui_safely(self.switch_voice)
 
     def on_voice_status_update(self, msg: str):
         self.status_text.value = msg
-        try:
-            self.status_text.update()
-        except Exception:
-            pass
+        update_ui_safely(self.status_text)
 
     def on_voice_trigger_detected(self):
-        """Gatillado por Vosk al detectar 'recopila' de forma segura en page.run_thread."""
+        """
+        REGLA DE SEGURIDAD ESTRICTA:
+        El comando 'recopila' solo se ejecuta si:
+        1. voice_service.allow_voice_trigger es True.
+        2. La pestaña activa es Captura (índice 0).
+        3. La cámara web está encendida.
+        4. La máquina de visión está en estado 'Inactivo'.
+        """
+        if not getattr(self.voice_service, "allow_voice_trigger", True):
+            print("[Voz] Comando 'recopila' ignorado: allow_voice_trigger está desactivado.")
+            return
+
+        if hasattr(self, "tabs") and self.tabs and getattr(self.tabs, "selected_index", 0) != 0:
+            print("[Voz] Comando 'recopila' ignorado: fuera de la pestaña de Captura.")
+            return
+
         if not self.is_camera_active:
-            self.toggle_camera(None)
+            print("[Voz] Comando 'recopila' ignorado: la cámara web está apagada.")
+            return
+
+        if self.vision_service.current_state != "Inactivo":
+            print(f"[Voz] Comando 'recopila' ignorado: visión en estado activo '{self.vision_service.current_state}'.")
+            return
 
         target_word = None
         if self.selected_category and self.selected_word:
@@ -433,13 +482,12 @@ class LSPUIController:
             return
 
         self.selected_word = target_word
-        show_snack_bar(self.page, f"🎤 ¡Comando 'Recopila' detectado! Prepárate para '{target_word.upper()}'")
+        show_snack_bar(self.page, f"🎤 ¡Comando 'Recopila' confirmado! Preparando captura para '{target_word.upper()}'")
         self.start_preparation_flow(target_word)
 
-    # --- FLUJO DE PREPARACIÓN Y CAPTURA SIN ESPERA BLOQUEANTE ---
+    # --- FLUJO DE PREPARACIÓN Y CAPTURA ---
 
     def start_preparation_flow(self, word: str):
-        """Inicia la máquina de estados sin bloqueos de tiempo en el hilo de la UI."""
         if not self.is_camera_active:
             self.toggle_camera(None)
 
@@ -460,10 +508,7 @@ class LSPUIController:
             self.category_dropdown.value = self.selected_category
         elif categories:
             self.category_dropdown.value = None
-        try:
-            self.category_dropdown.update()
-        except Exception:
-            pass
+        update_ui_safely(self.category_dropdown)
 
     def on_category_changed(self, category_val: str):
         if not category_val:
@@ -474,22 +519,20 @@ class LSPUIController:
         self.status_text.color = COLOR_TEXT_TITLE
         self.refresh_words_list()
         self.update_cnn_button_state()
+        update_ui_safely(self.status_text)
 
     def update_cnn_button_state(self):
-        """Habilita el botón de entrenamiento CNN si todas las palabras tienen >= 30 muestras."""
         if not self.selected_category:
             self.btn_generate_cnn.disabled = True
             self.btn_generate_cnn.tooltip = "Seleccione una categoría primero"
-            try: self.btn_generate_cnn.update()
-            except Exception: pass
+            update_ui_safely(self.btn_generate_cnn)
             return
 
         words = self.data_manager.get_words_in_category(self.selected_category)
         if len(words) < 2:
             self.btn_generate_cnn.disabled = True
             self.btn_generate_cnn.tooltip = f"Se requieren al menos 2 palabras (actual: {len(words)})"
-            try: self.btn_generate_cnn.update()
-            except Exception: pass
+            update_ui_safely(self.btn_generate_cnn)
             return
 
         missing = []
@@ -507,9 +550,12 @@ class LSPUIController:
             self.btn_generate_cnn.tooltip = "¡Listo! Todas las palabras tienen 30+ muestras."
 
         try:
-            self.btn_generate_cnn.update()
-        except Exception:
-            self.page.update()
+            if self.page and hasattr(self.page, "is_active") and self.page.is_active:
+                update_ui_safely(self.btn_generate_cnn)
+        except RuntimeError as e:
+            if "destroyed session" in str(e).lower():
+                print("[CONCURRENCIA] Sesión cerrada. Abortando actualización de control.")
+                return
 
     def add_new_category(self, e):
         cat_name = self.new_category_input.value.strip()
@@ -564,12 +610,12 @@ class LSPUIController:
             finally:
                 if hasattr(self.page, "pop_dialog"):
                     self.page.pop_dialog()
-                self.page.update()
+                update_ui_safely(self.page)
 
         def cancel_dialog(ev):
             if hasattr(self.page, "pop_dialog"):
                 self.page.pop_dialog()
-            self.page.update()
+            update_ui_safely(self.page)
 
         dialog = ft.AlertDialog(
             title=ft.Text("Editar Nombre de Categoría", color=COLOR_TEXT_TITLE, weight=ft.FontWeight.BOLD),
@@ -581,7 +627,7 @@ class LSPUIController:
         )
         if hasattr(self.page, "show_dialog"):
             self.page.show_dialog(dialog)
-        self.page.update()
+        update_ui_safely(self.page)
 
     def on_delete_category_clicked(self, e):
         if not self.selected_category:
@@ -615,8 +661,7 @@ class LSPUIController:
     def refresh_words_list(self):
         self.words_listview.controls.clear()
         if not self.selected_category:
-            try: self.words_listview.update()
-            except Exception: pass
+            update_ui_safely(self.words_listview)
             return
 
         words = self.data_manager.get_words_in_category(self.selected_category)
@@ -631,31 +676,40 @@ class LSPUIController:
 
             word_row = ft.Container(
                 content=ft.Row([
-                    ft.Text(f"{word.upper()} ({samples_count}/30)", expand=True, size=13, weight=ft.FontWeight.BOLD, color=badge_color),
+                    ft.Text(f"{word.upper()} ({samples_count}/30)", expand=True, size=12, weight=ft.FontWeight.BOLD, color=badge_color),
+                    # Botón Modificar Muestras
+                    ft.IconButton(
+                        icon=ft.Icons.LIST_ALT,
+                        icon_color=COLOR_PRIMARY,
+                        icon_size=18,
+                        tooltip="Modificar Muestras (.csv individuales)",
+                        on_click=lambda ev, w=word: self.open_samples_modal(w)
+                    ),
+                    # Botón Grabar
                     ft.IconButton(
                         icon=ft.Icons.RADIO_BUTTON_CHECKED,
                         icon_color=COLOR_REC_BTN,
+                        icon_size=18,
                         tooltip="Grabar seña con preparación previa",
                         on_click=lambda ev, w=word: self.start_preparation_flow(w)
                     ),
+                    # Botón Eliminar
                     ft.IconButton(
                         icon=ft.Icons.DELETE_OUTLINE,
                         icon_color=COLOR_REC_BTN,
-                        tooltip="Eliminar palabra y sus muestras",
+                        icon_size=18,
+                        tooltip="Eliminar palabra y todas sus muestras",
                         on_click=lambda ev, w=word: self.delete_word(w)
                     )
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                padding=ft.Padding(10, 6, 10, 6),
+                padding=ft.Padding(8, 4, 8, 4),
                 border=ft.Border.all(1, COLOR_BORDER),
                 border_radius=8,
                 bgcolor="#F8FAFC"
             )
             self.words_listview.controls.append(word_row)
 
-        try:
-            self.words_listview.update()
-        except Exception:
-            self.page.update()
+        update_ui_safely(self.words_listview)
 
     def add_new_word(self, e):
         if not self.selected_category:
@@ -683,6 +737,127 @@ class LSPUIController:
             self.refresh_words_list()
             self.update_cnn_button_state()
 
+    # --- MODAL DE GESTIÓN DE MUESTRAS (CRUD GRANULAR) ---
+
+    def open_samples_modal(self, word: str):
+        if not self.selected_category:
+            return
+
+        self.current_samples_word = word
+        self._reload_samples_listview()
+
+        def _on_close(e):
+            if hasattr(self.page, "pop_dialog"):
+                self.page.pop_dialog()
+            self.refresh_words_list()
+            self.update_cnn_button_state()
+
+        def _on_delete_all(e):
+            deleted = self.data_manager.delete_all_samples_for_word(self.selected_category, word)
+            self._reload_samples_listview()
+            self.refresh_words_list()
+            self.update_cnn_button_state()
+            show_snack_bar(self.page, f"Se eliminaron {deleted} muestras de '{word.upper()}'.")
+
+        dialog = ft.AlertDialog(
+            title=ft.Row([
+                ft.Icon(ft.Icons.FOLDER_OPEN, color=COLOR_PRIMARY),
+                ft.Text(f"Muestras de '{word.upper()}' ({self.selected_category.upper()})",
+                        size=15, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+            ], spacing=8),
+            content=ft.Container(
+                content=self.samples_listview,
+                width=500,
+                height=320,
+                bgcolor="#FFFFFF",
+                border=ft.Border.all(1, COLOR_BORDER),
+                border_radius=10,
+                padding=6
+            ),
+            actions=[
+                ft.Button(
+                    content="Eliminar Todas las Muestras",
+                    icon=ft.Icons.DELETE_SWEEP,
+                    bgcolor=COLOR_REC_BTN,
+                    color=ft.Colors.WHITE,
+                    on_click=_on_delete_all
+                ),
+                ft.Button(
+                    content="Cerrar",
+                    bgcolor=COLOR_PRIMARY,
+                    color=ft.Colors.WHITE,
+                    on_click=_on_close
+                )
+            ]
+        )
+
+        self.current_samples_dialog = dialog
+        if hasattr(self.page, "show_dialog"):
+            self.page.show_dialog(dialog)
+        update_ui_safely(self.page)
+
+    def _reload_samples_listview(self):
+        self.samples_listview.controls.clear()
+        if not self.selected_category or not self.current_samples_word:
+            return
+
+        samples = self.data_manager.get_sample_files(self.selected_category, self.current_samples_word)
+
+        if not samples:
+            self.samples_listview.controls.append(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.Icons.INBOX, size=36, color=COLOR_TEXT_MUTED),
+                        ft.Text("No hay muestras grabadas para esta palabra.",
+                                color=COLOR_TEXT_MUTED, size=12, weight=ft.FontWeight.W_500)
+                    ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                    height=180,
+                    alignment=ft.Alignment.CENTER
+                )
+            )
+        else:
+            for idx, sample in enumerate(samples):
+                badge_bg = "#DCFCE7" if sample["is_valid"] else "#FEF3C7"
+                badge_fg = COLOR_SUCCESS if sample["is_valid"] else "#D97706"
+                
+                row_item = ft.Container(
+                    content=ft.Row([
+                        ft.Column([
+                            ft.Text(f"Muestra #{idx + 1} ({sample['filename']})", size=12, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
+                            ft.Row([
+                                ft.Container(
+                                    content=ft.Text(f"{sample['rows']}f x {sample['cols']}c", size=10, color=badge_fg, weight=ft.FontWeight.W_600),
+                                    bgcolor=badge_bg,
+                                    border_radius=4,
+                                    padding=ft.Padding(5, 2, 5, 2)
+                                ),
+                                ft.Text(f"{sample['size_kb']} KB", size=10, color=COLOR_TEXT_MUTED)
+                            ], spacing=6)
+                        ], spacing=2, expand=True),
+                        ft.IconButton(
+                            icon=ft.Icons.DELETE_OUTLINE,
+                            icon_color=COLOR_REC_BTN,
+                            icon_size=18,
+                            tooltip="Eliminar esta muestra individual",
+                            on_click=lambda ev, p=sample["filepath"]: self.delete_single_sample_action(p)
+                        )
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    bgcolor="#F8FAFC",
+                    border=ft.Border.all(1, COLOR_BORDER),
+                    border_radius=8,
+                    padding=ft.Padding(8, 4, 8, 4)
+                )
+                self.samples_listview.controls.append(row_item)
+
+        update_ui_safely(self.samples_listview)
+
+    def delete_single_sample_action(self, file_path: str):
+        if self.data_manager.delete_sample_file(file_path):
+            self._reload_samples_listview()
+            self.refresh_words_list()
+            self.update_cnn_button_state()
+            show_snack_bar(self.page, "Muestra eliminada correctamente.")
+
     def enable_ui_controls(self, enabled: bool):
         self.category_dropdown.disabled = not enabled
         self.btn_edit_category.disabled = not enabled
@@ -696,19 +871,14 @@ class LSPUIController:
             self.update_cnn_button_state()
         else:
             self.btn_generate_cnn.disabled = True
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        update_ui_safely(self.page)
 
     # --- ACCIONES DE CÁMARA ---
 
     def toggle_camera(self, e):
-        """Enciende o apaga la cámara web de forma asíncrona a 25 FPS estables."""
         if not self.is_camera_active:
             self.status_text.value = "Iniciando cámara web a 25 FPS estables..."
-            try: self.status_text.update()
-            except Exception: pass
+            update_ui_safely(self.status_text)
             
             self.vision_service.start()
             self.is_camera_active = True
@@ -729,18 +899,14 @@ class LSPUIController:
             self.status_text.value = "Cámara apagada."
             self.status_text.color = COLOR_TEXT_MUTED
         
-        try:
-            self.btn_camera.update()
-            self.status_text.update()
-            self.camera_view.update()
-            self.test_camera_view.update()
-        except Exception:
-            self.page.update()
+        update_ui_safely(self.btn_camera)
+        update_ui_safely(self.status_text)
+        update_ui_safely(self.camera_view)
+        update_ui_safely(self.test_camera_view)
 
-    # --- MÓDULO DE ENTRENAMIENTO CNN 1D ---
+    # --- MÓDULO DE ENTRENAMIENTO CNN 1D CON SAFE UPDATE ---
 
     def run_cnn_training_flow(self, e):
-        """Entrena la CNN 1D espacio-temporal en un hilo secundario independiente con despacho seguro."""
         if not self.selected_category:
             show_snack_bar(self.page, "Seleccione una categoría para entrenar", is_error=True)
             return
@@ -748,20 +914,22 @@ class LSPUIController:
         def _async_cnn_train():
             try:
                 def _ui_start():
-                    self.training_progress.visible = True
-                    self.status_text.value = f"Entrenando CNN 1D para '{self.selected_category.upper()}' (50 épocas)..."
-                    self.status_text.color = COLOR_PRIMARY
-                    self.enable_ui_controls(False)
-                    self.page.update()
+                    try:
+                        self.training_progress.visible = True
+                        self.status_text.value = f"Entrenando CNN 1D para '{self.selected_category.upper()}' (50 épocas)..."
+                        self.status_text.color = COLOR_PRIMARY
+                        self.enable_ui_controls(False)
+                        update_ui_safely(self.page)
+                    except RuntimeError as re:
+                        if "destroyed session" in str(re).lower(): return
 
-                self.page.run_thread(_ui_start)
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_start)
 
-                # Cargar dataset de la categoría
                 target_frames = self.vision_service.target_frames
                 X, y, label_map = self.data_manager.load_dataset_for_training(self.selected_category, target_frames=target_frames)
                 num_classes = len(label_map)
 
-                # Entrenar CNN 1D y exportar modelo .h5
                 model_path = self.model_trainer.build_and_train_cnn(
                     X_train=X,
                     y_train=y,
@@ -771,94 +939,126 @@ class LSPUIController:
                 )
 
                 def _ui_success():
-                    self.status_text.value = f"¡Modelo CNN generado con éxito! Guardado en: {model_path}"
-                    self.status_text.color = COLOR_SUCCESS
-                    show_snack_bar(self.page, f"¡Modelo CNN para '{self.selected_category.upper()}' generado con éxito!")
-                    self.load_trained_models_to_test_dropdown()
+                    try:
+                        self.status_text.value = f"¡Modelo CNN generado con éxito! Guardado en: {model_path}"
+                        self.status_text.color = COLOR_SUCCESS
+                        show_snack_bar(self.page, f"¡Modelo CNN para '{self.selected_category.upper()}' generado con éxito!")
+                        self.load_trained_models_to_test_dropdown()
+                    except RuntimeError as re:
+                        if "destroyed session" in str(re).lower(): return
 
-                self.page.run_thread(_ui_success)
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_success)
 
             except Exception as err:
                 def _ui_error():
-                    self.status_text.value = f"Error en entrenamiento CNN: {str(err)}"
-                    self.status_text.color = COLOR_REC_BTN
-                    show_snack_bar(self.page, f"Error: {str(err)}", is_error=True)
+                    try:
+                        self.status_text.value = f"Error en entrenamiento CNN: {str(err)}"
+                        self.status_text.color = COLOR_REC_BTN
+                        show_snack_bar(self.page, f"Error: {str(err)}", is_error=True)
+                    except RuntimeError as re:
+                        if "destroyed session" in str(re).lower(): return
 
-                self.page.run_thread(_ui_error)
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_error)
             finally:
                 def _ui_finish():
-                    self.training_progress.visible = False
-                    self.enable_ui_controls(True)
-                    self.page.update()
+                    try:
+                        self.training_progress.visible = False
+                        self.enable_ui_controls(True)
+                        update_ui_safely(self.page)
+                    except RuntimeError as re:
+                        if "destroyed session" in str(re).lower(): return
 
-                self.page.run_thread(_ui_finish)
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_finish)
 
         threading.Thread(target=_async_cnn_train, daemon=True).start()
 
-    # --- MÓDULO DE PRUEBAS Y VALIDACIÓN EN VIVO (SLIDING WINDOW) ---
+    # --- MÓDULO DE PRUEBAS: CARGA SEGURA Y DEFENSIVA DE MODELOS ---
 
     def load_trained_models_to_test_dropdown(self):
-        """Escanea el directorio 'modelos/' y puebla el dropdown de pruebas."""
+        """Escanea 'modelos/' buscando exclusivamente archivos binarios .h5 y .keras (sin .json)."""
         os.makedirs('modelos', exist_ok=True)
-        model_files = glob.glob('modelos/modelo_LSP_*.h5')
+        model_files = glob.glob('modelos/modelo_LSP_*.h5') + glob.glob('modelos/modelo_LSP_*.keras')
         
-        categories = []
+        categories = set()
         for mf in model_files:
+            if mf.endswith('.json'):
+                continue
             base = os.path.basename(mf)
-            cat = base.replace("modelo_LSP_", "").replace(".h5", "")
-            categories.append(cat)
+            cat = base.replace("modelo_LSP_", "").replace(".h5", "").replace(".keras", "")
+            if cat and not cat.endswith("_labels"):
+                categories.add(cat)
 
+        cat_list = sorted(list(categories))
         self.test_category_dropdown.options = [
-            ft.DropdownOption(key=c, text=f"Categoría: {c.upper()}") for c in categories
+            ft.DropdownOption(key=c, text=f"Categoría: {c.upper()}") for c in cat_list
         ]
         
-        if categories and not self.test_category_dropdown.value:
-            self.test_category_dropdown.value = categories[0]
-        elif not categories:
+        if cat_list and (not self.test_category_dropdown.value or self.test_category_dropdown.value not in cat_list):
+            self.test_category_dropdown.value = cat_list[0]
+        elif not cat_list:
             self.test_category_dropdown.value = None
 
-        try:
-            self.test_category_dropdown.update()
-        except Exception:
-            pass
+        update_ui_safely(self.test_category_dropdown)
 
     def on_test_category_selected(self, e):
         cat = self.test_category_dropdown.value
         if cat:
-            self.test_status_text.value = f"Modelo seleccionado: modelo_LSP_{cat}.h5 listo para probar."
-            try: self.test_status_text.update()
-            except Exception: self.page.update()
+            self.test_status_text.value = f"Modelo seleccionado: categoría {cat.upper()} listo para validar."
+            update_ui_safely(self.test_status_text)
 
     def toggle_live_test(self, e):
-        """Inicia o detiene la prueba en tiempo real con sliding window sin bloquear Flet."""
         if not self.is_testing:
             cat = self.test_category_dropdown.value
             if not cat:
                 show_snack_bar(self.page, "Debe seleccionar un modelo entrenado para probar", is_error=True)
                 return
 
-            model_path = f"modelos/modelo_LSP_{cat}.h5"
-            labels_path = f"modelos/modelo_LSP_{cat}_labels.json"
-            
+            # 1. Localizar estrictamente el modelo binario (.keras o .h5)
+            model_path = f"modelos/modelo_LSP_{cat}.keras"
             if not os.path.exists(model_path):
-                show_snack_bar(self.page, f"No se encontró el archivo del modelo: {model_path}", is_error=True)
+                model_path = f"modelos/modelo_LSP_{cat}.h5"
+
+            if not os.path.exists(model_path):
+                show_snack_bar(self.page, f"No se encontró el archivo del modelo binario: {model_path}", is_error=True)
                 return
 
+            # Validación defensiva de formato binario
+            if not (model_path.endswith('.keras') or model_path.endswith('.h5')):
+                raise ValueError(f"Ruta de modelo inválida: {model_path}. Debe ser un archivo .keras o .h5")
+
+            # 2. Cargar etiquetas estrictamente del JSON independiente
+            labels_path = f"modelos/modelo_LSP_{cat}_labels.json"
             labels = []
             if os.path.exists(labels_path):
-                with open(labels_path, 'r', encoding='utf-8') as f:
-                    label_map = json.load(f)
-                    labels = [label_map[str(i)] if str(i) in label_map else label_map[i] for i in range(len(label_map))]
+                try:
+                    with open(labels_path, 'r', encoding='utf-8') as f:
+                        label_map = json.load(f)
+                        if isinstance(label_map, dict):
+                            labels = [label_map[str(i)] if str(i) in label_map else label_map[i] for i in range(len(label_map))]
+                        elif isinstance(label_map, list):
+                            labels = label_map
+                except Exception as ex_json:
+                    print(f"Error leyendo {labels_path}: {ex_json}")
+                    labels = self.data_manager.get_words_in_category(cat)
             else:
                 labels = self.data_manager.get_words_in_category(cat)
 
             try:
-                self.live_tester = LiveTester(model_path, labels, page_ref=self.page)
+                # 3. Inicializar LiveTester con modelo binario y labels
+                self.live_tester = LiveTester(model_path=model_path, labels=labels, page_ref=self.page)
                 self.live_tester.start()
 
-                # Vincular tester con el servicio de visión
+                # Desactivar trigger de voz durante pruebas
+                self.voice_service.allow_voice_trigger = False
+
+                # Vincular controles con vision_service
                 self.vision_service.live_tester = self.live_tester
                 self.vision_service.prediction_label_control = self.lbl_prediction
+                self.vision_service.progress_bar_control = self.progress_bar_prediction
+                self.vision_service.confidence_label_control = self.lbl_confidence
 
                 if not self.is_camera_active:
                     self.toggle_camera(None)
@@ -868,10 +1068,12 @@ class LSPUIController:
                 self.btn_toggle_test.icon = ft.Icons.STOP
                 self.btn_toggle_test.bgcolor = COLOR_REC_BTN
                 self.lbl_prediction.value = "Esperando seña..."
-                self.lbl_prediction.color = COLOR_PRIMARY
-                self.test_status_text.value = f"🔴 Prueba en vivo activa: {cat.upper()} ({len(labels)} clases)."
+                self.lbl_prediction.color = COLOR_TEXT_TITLE
+                self.lbl_confidence.value = "Confianza: 0%"
+                self.progress_bar_prediction.value = 0.0
+                self.test_status_text.value = f"🔴 Prueba en vivo activa: {cat.upper()} ({len(labels)} clases). Voz activada."
                 self.test_status_text.color = COLOR_SUCCESS
-                show_snack_bar(self.page, f"Prueba en vivo iniciada para '{cat.upper()}'. Realice señas frente a la cámara.")
+                show_snack_bar(self.page, f"Prueba iniciada para '{cat.upper()}'. Realice señas frente a la cámara.")
 
             except Exception as ex:
                 show_snack_bar(self.page, f"Error cargando modelo: {str(ex)}", is_error=True)
@@ -882,106 +1084,141 @@ class LSPUIController:
             self.vision_service.live_tester = None
             self.vision_service.prediction_label_control = None
 
+            # Restaurar trigger de voz si estamos en pestaña 0
+            if hasattr(self, "tabs") and self.tabs and getattr(self.tabs, "selected_index", 0) == 0:
+                self.voice_service.allow_voice_trigger = True
+
             self.is_testing = False
             self.btn_toggle_test.content = "Iniciar Prueba"
             self.btn_toggle_test.icon = ft.Icons.PLAY_ARROW
             self.btn_toggle_test.bgcolor = COLOR_SUCCESS
             self.lbl_prediction.value = "Prueba detenida."
             self.lbl_prediction.color = COLOR_TEXT_MUTED
+            self.lbl_confidence.value = "Confianza: 0%"
+            self.progress_bar_prediction.value = 0.0
             self.test_status_text.value = "Prueba detenida. Puede cambiar de modelo o reiniciar."
             self.test_status_text.color = COLOR_TEXT_MUTED
             show_snack_bar(self.page, "Prueba en vivo detenida.")
 
-        try:
-            self.btn_toggle_test.update()
-            self.lbl_prediction.update()
-            self.test_status_text.update()
-        except Exception:
-            self.page.update()
+        update_ui_safely(self.btn_toggle_test)
+        update_ui_safely(self.lbl_prediction)
+        update_ui_safely(self.lbl_confidence)
+        update_ui_safely(self.progress_bar_prediction)
+        update_ui_safely(self.test_status_text)
 
     def close(self):
-        if self.voice_service:
-            self.voice_service.stop()
-        if self.live_tester:
-            self.live_tester.stop()
+        """Detiene de forma segura todos los servicios y bucles en segundo plano."""
+        try:
+            if self.voice_service:
+                self.voice_service.stop()
+        except Exception:
+            pass
+        try:
+            if self.live_tester:
+                self.live_tester.stop()
+        except Exception:
+            pass
+        try:
+            if self.vision_service:
+                self.vision_service.stop()
+        except Exception:
+            pass
 
-# --- CONSTRUCTORES DE VISTAS ESCOLARES (PESTAÑAS) ---
+# --- CONSTRUCTORES DE VISTAS ESCOLARES (PESTAÑAS v4) ---
 
 def build_training_view(controller: LSPUIController) -> ft.Container:
-    """Construye la vista principal con estética escolar (blanco y celeste)."""
+    """
+    Construye la vista de Captura y Entrenamiento:
+    - Panel izquierdo con Vocabulario en contenedor de scroll vertical fluido (height=240).
+    - Deslizadores de configuración (Espera y Frames) ubicados ergonómicamente al fondo del panel.
+    - Panel derecho con el monitor de cámara centrado (480x360).
+    """
     
-    # 1. Panel Lateral Izquierdo: Gestión de Categorías y Vocabulario
-    sidebar = ft.Container(
+    # 1. Contenedor Scrollable de Palabras (Scroll Adaptativo Vertical Obligatorio)
+    words_scrollable_container = ft.Container(
+        content=controller.words_listview,
+        height=240, # Altura controlada para no empujar el resto de elementos
+        border=ft.Border.all(1, "#D1E4F8"),
+        border_radius=12,
+        bgcolor="#FFFFFF",
+        padding=10
+    )
+
+    # 2. Deslizadores de Configuración reubicados en la parte inferior
+    sliders_bottom_card = ft.Container(
         content=ft.Column([
-            ft.Text("1. Categorías de Estudio", size=15, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
             ft.Row([
-                controller.new_category_input,
-                ft.IconButton(ft.Icons.ADD_CIRCLE, icon_color=COLOR_PRIMARY, on_click=controller.add_new_category, tooltip="Crear Categoría")
+                ft.Icon(ft.Icons.TUNE, size=15, color=COLOR_PRIMARY),
+                ft.Text("Configuración de Captura (Docente)", weight=ft.FontWeight.BOLD, color="#1A365D", size=13),
             ], spacing=6),
             ft.Row([
-                controller.category_dropdown,
-                controller.btn_edit_category,
-                controller.btn_delete_category,
-            ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=4),
-            ft.Divider(height=10, color=COLOR_BORDER),
-            
-            ft.Text("2. Vocabulario de la Categoría", size=15, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
-            ft.Row([
-                controller.new_word_input,
-                ft.IconButton(ft.Icons.ADD_TASK, icon_color=COLOR_PRIMARY, on_click=controller.add_new_word, tooltip="Agregar Palabra")
-            ], spacing=6),
-            ft.Container(
-                content=controller.words_listview,
-                height=240,
-                border=ft.Border.all(1, COLOR_BORDER),
-                border_radius=10,
-                padding=6,
-                bgcolor="#FFFFFF"
-            ),
-            
-            # Panel de Configuración Dinámica para el Docente
-            ft.Container(
-                content=ft.Column([
-                    ft.Row([
-                        ft.Icon(ft.Icons.TUNE, size=18, color=COLOR_PRIMARY),
-                        ft.Text("Configuración de Captura (Docente)", size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
-                    ], spacing=6),
-                    ft.Row([
-                        ft.Text("Espera previa:", size=12, color=COLOR_TEXT_BODY),
-                        controller.lbl_delay_val,
-                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    controller.slider_delay,
-                    ft.Row([
-                        ft.Text("Frames por muestra:", size=12, color=COLOR_TEXT_BODY),
-                        controller.lbl_frames_val,
-                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    controller.slider_frames,
-                ], spacing=4),
-                bgcolor=COLOR_STATUS_BG,
-                border=ft.Border.all(1, COLOR_BORDER),
-                border_radius=10,
-                padding=10
-            )
-        ], spacing=10),
+                ft.Column([
+                    ft.Row([ft.Text("Espera (s):", size=11, color=COLOR_TEXT_BODY), controller.lbl_delay_val], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    controller.slider_delay
+                ], expand=True),
+                ft.Column([
+                    ft.Row([ft.Text("Muestras (frames):", size=11, color=COLOR_TEXT_BODY), controller.lbl_frames_val], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    controller.slider_frames
+                ], expand=True)
+            ], spacing=10)
+        ], spacing=4),
+        bgcolor="#FFFFFF",
+        border=ft.Border.all(1, "#D1E4F8"),
+        border_radius=10,
+        padding=10
+    )
+
+    # Panel Izquierdo Completo con estructura solicitada en muestra .md
+    panel_izquierdo = ft.Column([
+        ft.Text("1. Categorías de Estudio", size=15, color="#1A365D", weight=ft.FontWeight.BOLD),
+        ft.Row([
+            controller.new_category_input,
+            ft.IconButton(ft.Icons.ADD_CIRCLE, icon_color=COLOR_PRIMARY, on_click=controller.add_new_category, tooltip="Crear Categoría")
+        ], spacing=4),
+        ft.Row([
+            controller.category_dropdown,
+            controller.btn_edit_category,
+            controller.btn_delete_category,
+        ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=2),
+        
+        ft.Divider(height=10, color="#D1E4F8"),
+        
+        ft.Text("2. Vocabulario Registrado", size=15, color="#1A365D", weight=ft.FontWeight.BOLD),
+        ft.Row([
+            controller.new_word_input,
+            ft.IconButton(ft.Icons.ADD_TASK, icon_color=COLOR_PRIMARY, on_click=controller.add_new_word, tooltip="Agregar Palabra")
+        ], spacing=4),
+        
+        # Lista de palabras con scroll ("bajar y subir")
+        words_scrollable_container,
+        
+        ft.Divider(height=10, color="#D1E4F8"),
+        
+        # Deslizadores reubicados en la parte inferior
+        sliders_bottom_card
+    ], spacing=8, expand=True)
+
+    sidebar = ft.Container(
+        content=panel_izquierdo,
         width=460,
         bgcolor=COLOR_CARD_BG,
-        padding=16,
+        padding=14,
         border_radius=12,
         border=ft.Border.all(1, COLOR_BORDER)
     )
 
-    # 2. Panel Derecho: Cámara Web a 25 FPS y Acciones
+    # Panel Derecho: Monitor de Video Controlado y Centrado (480x360)
     camera_panel = ft.Container(
         content=ft.Column([
             ft.Row([
                 ft.Row([
-                    ft.Icon(ft.Icons.CAMERA_ALT, color=COLOR_PRIMARY, size=20),
-                    ft.Text("Captura de Señas & Red Convolucional", size=15, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
+                    ft.Icon(ft.Icons.CAMERA_ALT, color=COLOR_PRIMARY, size=18),
+                    ft.Text("Captura de Señas & Red Convolucional", size=14, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
                 ], spacing=6),
-                ft.Row([controller.switch_voice, controller.voice_badge], spacing=6)
+                ft.Row([controller.switch_voice, controller.voice_badge], spacing=4)
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             
-            # Monitor de video
+            # Monitor de video (480x360)
             ft.Container(
                 content=ft.Column([
                     controller.warning_banner,
@@ -990,47 +1227,45 @@ def build_training_view(controller: LSPUIController) -> ft.Container:
                 border=ft.Border.all(2, COLOR_BORDER),
                 border_radius=12,
                 bgcolor="#0F172A",
-                padding=6,
+                padding=4,
                 alignment=ft.Alignment.CENTER
             ),
             
-            # Panel de Botones (Cámara y Modelo CNN 1D)
+            # Botones de Acción
             ft.Row([
                 controller.btn_camera,
                 controller.btn_generate_cnn
-            ], alignment=ft.MainAxisAlignment.CENTER, spacing=14),
-            
-            # Barra de Estado Escolar en Banner Azul Pastel
-            ft.Container(
-                content=controller.training_status_container,
-                bgcolor=COLOR_STATUS_BG,
-                border_radius=10,
-                padding=10,
-                border=ft.Border.all(1, COLOR_BORDER)
-            )
-        ], spacing=10, alignment=ft.MainAxisAlignment.CENTER),
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=12)
+        ], spacing=10, alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
         expand=True,
         bgcolor=COLOR_CARD_BG,
-        padding=16,
+        padding=14,
         border_radius=12,
         border=ft.Border.all(1, COLOR_BORDER)
     )
 
     return ft.Container(
         content=ft.Row([sidebar, camera_panel], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START, spacing=14),
-        padding=6
+        padding=4
     )
 
 def build_live_testing_view(controller: LSPUIController) -> ft.Container:
-    """Construye la pestaña de Pruebas y Validación en Vivo con la estética escolar."""
+    """
+    Construye la vista de Pruebas y Validación en Vivo (Traductor):
+    - Selector de modelos entrenados de la carpeta modelos/.
+    - Monitor de cámara web (480x360).
+    - Tarjeta gigante blanca con la palabra traducida y barra de confianza.
+    - Síntesis de voz offline con pyttsx3.
+    """
     return ft.Container(
         content=ft.Column([
             ft.Row([
-                ft.Icon(ft.Icons.ANALYTICS_OUTLINED, color=COLOR_PRIMARY, size=26),
-                ft.Text("Validación de Señas en Tiempo Real (Ventana Deslizante 25 FPS)", size=17, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
-            ], spacing=10),
-            ft.Divider(height=10, color=COLOR_BORDER),
+                ft.Icon(ft.Icons.ANALYTICS_OUTLINED, color=COLOR_PRIMARY, size=24),
+                ft.Text("Validación de Señas en Vivo con Síntesis de Voz (pyttsx3)", size=16, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
+            ], spacing=8),
+            ft.Divider(height=8, color=COLOR_BORDER),
             
+            # Fila de Controles y Selector de Modelos
             ft.Row([
                 controller.test_category_dropdown,
                 controller.btn_toggle_test,
@@ -1040,78 +1275,119 @@ def build_live_testing_view(controller: LSPUIController) -> ft.Container:
                     tooltip="Recargar modelos de la carpeta modelos/",
                     on_click=lambda e: controller.load_trained_models_to_test_dropdown()
                 )
-            ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=15),
+            ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
             
             ft.Row([
-                # Monitor de video en vivo
+                # Monitor de video en vivo (480x360)
                 ft.Container(
                     content=controller.test_camera_view,
                     border=ft.Border.all(2, COLOR_BORDER),
                     border_radius=12,
                     bgcolor="#0F172A",
-                    padding=6,
+                    padding=4,
                     alignment=ft.Alignment.CENTER
                 ),
                 
-                # Tarjeta de predicción escolar
+                # Panel de Salida: Tipografía Gigante y Síntesis de Voz
                 ft.Container(
                     content=ft.Column([
-                        ft.Text("Resultado de Inferencia", size=15, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
+                        ft.Row([
+                            ft.Icon(ft.Icons.RECORD_VOICE_OVER, color=COLOR_PRIMARY, size=20),
+                            ft.Text("Traducción en Tiempo Real", size=14, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+                        ], spacing=6),
+                        
+                        # Tarjeta Blanca Pura con Bordes Celestes
                         ft.Container(
                             content=ft.Column([
-                                ft.Icon(ft.Icons.RECORD_VOICE_OVER, size=46, color=COLOR_PRIMARY),
-                                controller.lbl_prediction,
-                                ft.Container(
-                                    content=ft.Text("Umbral de confianza pedagógico: > 85%", size=12, color=COLOR_PRIMARY, weight=ft.FontWeight.W_500),
-                                    bgcolor=COLOR_STATUS_BG,
-                                    border_radius=6,
-                                    padding=ft.Padding(10, 4, 10, 4),
-                                    border=ft.Border.all(1, COLOR_BORDER)
-                                )
-                            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=10),
-                            bgcolor="#F8FAFC",
+                                ft.Text("PALABRA DETECTADA", size=11, weight=ft.FontWeight.BOLD, color=COLOR_PRIMARY),
+                                controller.lbl_prediction,  # Tipografía gigante
+                                ft.Container(height=4),
+                                controller.lbl_confidence,  # Porcentaje
+                                controller.progress_bar_prediction,  # Barra celeste
+                                ft.Container(height=4),
+                                ft.Row([
+                                    ft.Icon(ft.Icons.VOLUME_UP, size=15, color=COLOR_TEXT_MUTED),
+                                    ft.Text("Voz activa (>85% sostenido en 10 frames)", size=11, color=COLOR_TEXT_MUTED)
+                                ], spacing=4, alignment=ft.MainAxisAlignment.CENTER)
+                            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4),
+                            bgcolor="#FFFFFF",
                             border=ft.Border.all(2, COLOR_BORDER),
                             border_radius=12,
-                            padding=25,
+                            padding=16,
                             alignment=ft.Alignment.CENTER,
                             width=460,
                             height=240
                         ),
                         controller.test_status_text
-                    ], spacing=12),
-                    padding=10,
+                    ], spacing=10),
+                    padding=6,
                     expand=True
                 )
-            ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START, spacing=18)
-        ], spacing=14),
-        padding=16,
+            ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START, spacing=14)
+        ], spacing=10),
+        padding=14,
         bgcolor=COLOR_CARD_BG,
         border_radius=12,
         border=ft.Border.all(1, COLOR_BORDER)
     )
 
 def build_main_app_tabs(controller: LSPUIController) -> ft.Tabs:
-    """Ensambla las pestañas principales de la aplicación con TabBar y TabBarView de Flet 0.86."""
-    t1 = ft.Tab(label="Captura y Entrenamiento", icon=ft.Icons.SCHOOL)
-    t2 = ft.Tab(label="Validación en Vivo (Testing)", icon=ft.Icons.FACT_CHECK)
-    
+    """
+    Implementa el control de pestañas nativo ft.Tabs conectando TabBar y TabBarView.
+    - Pestaña 1 (Captura y Entrenamiento): Grilla de grabación y gestión de señas.
+    - Pestaña 2 (Prueba en Vivo del Traductor): Monitor, inferencia con letras gigantes y TTS.
+    - Apaga la cámara automáticamente al cambiar de pestaña para prevenir colisiones de hardware.
+    """
+    view_training = build_training_view(controller)
+    view_testing = build_live_testing_view(controller)
+
+    tab1 = ft.Tab(label="Captura y Entrenamiento", icon=ft.Icons.SCHOOL)
+    tab2 = ft.Tab(label="Prueba en Vivo del Traductor", icon=ft.Icons.FACT_CHECK)
+
     tab_bar = ft.TabBar(
-        tabs=[t1, t2],
+        tabs=[tab1, tab2],
         divider_color=COLOR_BORDER,
         indicator_color=COLOR_PRIMARY,
         label_color=COLOR_PRIMARY,
         unselected_label_color=COLOR_TEXT_MUTED
     )
-    tab_views = ft.TabBarView(
+
+    tab_view = ft.TabBarView(
+        expand=True,
         controls=[
-            build_training_view(controller),
-            build_live_testing_view(controller)
-        ],
-        expand=True
+            view_training,
+            view_testing
+        ]
     )
-    
-    return ft.Tabs(
+
+    def on_tab_change(e):
+        try:
+            new_idx = int(e.data) if hasattr(e, "data") and e.data is not None else tabs.selected_index
+        except Exception:
+            new_idx = getattr(tabs, "selected_index", 0)
+
+        # 1. Apagar cámara si estaba activa para evitar colisiones de hardware entre pestañas
+        if controller.is_camera_active:
+            controller.toggle_camera(None)
+
+        if controller.is_testing:
+            controller.toggle_live_test(None)
+
+        # 2. Control de contexto de voz y recarga de modelos
+        if new_idx == 0:
+            controller.voice_service.allow_voice_trigger = True
+            print("[Tabs] Pestaña Captura activa: allow_voice_trigger = True")
+        else:
+            controller.voice_service.allow_voice_trigger = False
+            controller.load_trained_models_to_test_dropdown()
+            print("[Tabs] Pestaña Pruebas activa: allow_voice_trigger = False")
+
+    tabs = ft.Tabs(
         length=2,
-        content=ft.Column([tab_bar, tab_views], expand=True, spacing=8),
-        expand=True
+        height=680,
+        content=ft.Column(expand=True, controls=[tab_bar, tab_view], spacing=6),
+        on_change=on_tab_change
     )
+
+    controller.tabs = tabs
+    return tabs

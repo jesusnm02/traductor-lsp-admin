@@ -92,10 +92,18 @@ class LSPVisionService:
             self.current_state = new_state
 
         if self.on_state_changed:
-            if self.page and hasattr(self.page, "run_thread"):
-                self.page.run_thread(self.on_state_changed, new_state, message)
-            else:
-                self.on_state_changed(new_state, message)
+            try:
+                if self.page and hasattr(self.page, "is_active") and not self.page.is_active:
+                    return
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(self.on_state_changed, new_state, message)
+                else:
+                    self.on_state_changed(new_state, message)
+            except RuntimeError as re:
+                if "destroyed session" in str(re).lower():
+                    return
+            except Exception:
+                pass
 
     def start_preparation(self, category_name: str, word: str):
         """Dispara la transición a 'Preparacion' (cuenta regresiva de 3 segundos)."""
@@ -228,6 +236,8 @@ class LSPVisionService:
                     word, conf = self.live_tester.process_frame(
                         flat_vector,
                         prediction_label_control=self.prediction_label_control,
+                        progress_bar_control=getattr(self, "progress_bar_control", None),
+                        confidence_label_control=getattr(self, "confidence_label_control", None),
                         page_ref=self.page
                     )
                     if word and conf > 0.85:
@@ -269,10 +279,20 @@ class LSPVisionService:
                 if finished:
                     self.change_state("Fin", f"Grabación completada para '{word.upper()}'.")
                     if self.recording_callback:
-                        if self.page and hasattr(self.page, "run_thread"):
-                            self.page.run_thread(self.recording_callback, cat, word, sequence_to_save)
-                        else:
-                            threading.Thread(target=self.recording_callback, args=(cat, word, sequence_to_save), daemon=True).start()
+                        try:
+                            if self.page and hasattr(self.page, "is_active") and not self.page.is_active:
+                                self.stop()
+                                break
+                            if self.page and hasattr(self.page, "run_thread"):
+                                self.page.run_thread(self.recording_callback, cat, word, sequence_to_save)
+                            else:
+                                threading.Thread(target=self.recording_callback, args=(cat, word, sequence_to_save), daemon=True).start()
+                        except RuntimeError as re:
+                            if "destroyed session" in str(re).lower():
+                                self.stop()
+                                break
+                        except Exception:
+                            pass
                     
                     self.change_state("Inactivo", f"Muestra procesada para '{word.upper()}'.")
 
@@ -286,11 +306,21 @@ class LSPVisionService:
             img_base64 = base64.b64encode(buffer).decode('utf-8')
 
             # Despacho seguro de actualización a Flet UI con page.run_thread()
-            if self.on_frame_callback:
-                if self.page and hasattr(self.page, "run_thread"):
-                    self.page.run_thread(self.on_frame_callback, img_base64, self.is_camera_obstructed)
-                else:
-                    self.on_frame_callback(img_base64, self.is_camera_obstructed)
+            if self.on_frame_callback and self.is_running.is_set():
+                try:
+                    if self.page and hasattr(self.page, "is_active") and not self.page.is_active:
+                        self.stop()
+                        break
+                    if self.page and hasattr(self.page, "run_thread"):
+                        self.page.run_thread(self.on_frame_callback, img_base64, self.is_camera_obstructed)
+                    else:
+                        self.on_frame_callback(img_base64, self.is_camera_obstructed)
+                except RuntimeError as re:
+                    if "destroyed session" in str(re).lower():
+                        self.stop()
+                        break
+                except Exception:
+                    pass
 
             # Control estricto de FPS (~25 FPS) para eliminar el flickering
             time.sleep(0.04)

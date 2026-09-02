@@ -185,6 +185,99 @@ class LSPDataManager:
         df.to_csv(file_path, index=False)
         return file_path
 
+    def get_sample_files(self, category_name: str, word: str) -> list:
+        """
+        Retorna la lista de archivos de muestra .csv para una palabra específica
+        junto con información de filas, columnas y tamaño en KB.
+        """
+        word_dir = self._get_word_dir(category_name, word)
+        if not os.path.exists(word_dir):
+            return []
+
+        files = [f for f in os.listdir(word_dir) if f.endswith('.csv')]
+        def _sort_key(f_name):
+            try:
+                return int(f_name.replace("seq_", "").replace(".csv", ""))
+            except Exception:
+                return f_name
+        files.sort(key=_sort_key)
+
+        samples_info = []
+        for file_name in files:
+            file_path = os.path.join(word_dir, file_name)
+            rows = 0
+            cols = 0
+            size_kb = 0.0
+            try:
+                size_kb = os.path.getsize(file_path) / 1024.0
+                df = pd.read_csv(file_path)
+                rows, cols = df.shape
+            except Exception:
+                pass
+
+            samples_info.append({
+                "filename": file_name,
+                "filepath": file_path,
+                "rows": rows,
+                "cols": cols,
+                "size_kb": round(size_kb, 1),
+                "is_valid": bool(rows >= 20 and cols in [255, 159])
+            })
+
+        return samples_info
+
+    def delete_sample_file(self, file_path: str) -> bool:
+        """
+        Elimina físicamente un archivo de muestra individual y reorganiza correlativamente los archivos restantes.
+        """
+        if os.path.exists(file_path):
+            word_dir = os.path.dirname(file_path)
+            os.remove(file_path)
+            self._reindex_samples(word_dir)
+            return True
+        return False
+
+    def delete_all_samples_for_word(self, category_name: str, word: str) -> int:
+        """
+        Elimina todas las muestras (.csv) registradas para una palabra específica.
+        """
+        word_dir = self._get_word_dir(category_name, word)
+        if not os.path.exists(word_dir):
+            return 0
+
+        files = [f for f in os.listdir(word_dir) if f.endswith('.csv')]
+        count = 0
+        for f in files:
+            p = os.path.join(word_dir, f)
+            try:
+                os.remove(p)
+                count += 1
+            except Exception:
+                pass
+        return count
+
+    def _reindex_samples(self, word_dir: str):
+        """Reorganiza correlativamente los archivos seq_0.csv, seq_1.csv... evitando huecos."""
+        if not os.path.exists(word_dir):
+            return
+        files = [f for f in os.listdir(word_dir) if f.endswith('.csv')]
+        def _sort_key(f_name):
+            try:
+                return int(f_name.replace("seq_", "").replace(".csv", ""))
+            except Exception:
+                return f_name
+        files.sort(key=_sort_key)
+
+        for new_idx, old_name in enumerate(files):
+            new_name = f"seq_{new_idx}.csv"
+            if old_name != new_name:
+                old_p = os.path.join(word_dir, old_name)
+                new_p = os.path.join(word_dir, new_name)
+                try:
+                    os.rename(old_p, new_p)
+                except Exception:
+                    pass
+
     def load_dataset_for_training(self, category_name: str, target_frames: int = None):
         """
         Carga el conjunto histórico de coordenadas para reentrenamiento completo.

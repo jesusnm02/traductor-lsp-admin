@@ -1,0 +1,14 @@
+# Entornos virtuales
+venv/
+env/
+.env
+
+# Archivos temporales compilados de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignorar modelos pesados y datos de entrenamiento si no quieres subirlos
+modelos/*.h5
+dataset/

@@ -16,50 +16,53 @@ def _normalize_text(text: str) -> str:
 
 class LSPVoiceService:
     """
-    Servicio de reconocimiento de voz local continuo utilizando Vosk y micrófono en streaming.
-    Detecta la palabra clave 'enciéndete' para activar la máquina de estados de entrenamiento
-    a manos libres.
+    Servicio de reconocimiento de voz continuo no bloqueante utilizando Vosk y sounddevice.
+    Diseñado para evitar deadlocks mediante threading.Event y despacho seguro con page.run_thread.
     """
-    def __init__(self, trigger_callback=None, status_callback=None):
-        self.trigger_callback = trigger_callback
+    def __init__(self, page_ref=None, on_command_detected=None, status_callback=None):
+        self.page = page_ref
+        self.on_command_detected = on_command_detected
         self.status_callback = status_callback
         
         self.model = None
         self.recognizer = None
         self.audio_queue = queue.Queue()
         
-        self.is_listening = False
-        self.worker_thread = None
+        self.is_running = threading.Event()
+        self.thread = None
         self.stream = None
         
         self.last_trigger_time = 0.0
-        self.cooldown_seconds = 4.0  # Evita múltiples disparos en ráfaga
+        self.cooldown_seconds = 4.0  # Cooldown para evitar ráfagas
         self.lock = threading.Lock()
 
     def _ensure_model(self):
-        """Carga el modelo ligero en español desde caché local."""
+        """Carga el modelo ligero en español de forma perezosa (lazy) desde la caché local."""
         if self.model is None:
-            if self.status_callback:
-                self.status_callback("Cargando modelo de voz Vosk en español...")
-            # Carga el modelo en español
+            self._notify_status("Cargando modelo de voz Vosk en español...")
+            # Carga el modelo predescargado en español
             self.model = vosk.Model(lang="es")
             self.recognizer = vosk.KaldiRecognizer(self.model, 16000)
             self.recognizer.SetWords(True)
 
-    def start(self):
-        """Inicia la captura de micrófono y el bucle de reconocimiento en segundo plano."""
-        with self.lock:
-            if self.is_listening:
-                return
-            self.is_listening = True
+    def _notify_status(self, msg: str):
+        if self.status_callback:
+            if self.page and hasattr(self.page, "run_thread"):
+                self.page.run_thread(self.status_callback, msg)
+            else:
+                self.status_callback(msg)
 
-        self.worker_thread = threading.Thread(target=self._listen_loop, daemon=True)
-        self.worker_thread.start()
+    def start(self):
+        """Inicia la captura de audio en un hilo de fondo seguro."""
+        if self.is_running.is_set():
+            return
+        self.is_running.set()
+        self.thread = threading.Thread(target=self._listen_loop, daemon=True)
+        self.thread.start()
 
     def stop(self):
-        """Detiene de forma segura el micrófono y el hilo de escucha."""
-        with self.lock:
-            self.is_listening = False
+        """Detiene de forma no bloqueante el micrófono y el hilo de escucha."""
+        self.is_running.clear()
 
         if self.stream:
             try:
@@ -69,28 +72,23 @@ class LSPVoiceService:
                 pass
             self.stream = None
 
-        if self.worker_thread and self.worker_thread.is_alive():
-            self.worker_thread.join(timeout=1.0)
-            self.worker_thread = None
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+            self.thread = None
 
-        if self.status_callback:
-            self.status_callback("Reconocimiento de voz desactivado.")
+        self._notify_status("Reconocimiento de voz desactivado.")
 
     def _audio_callback(self, indata, frames, time_info, status):
-        """Callback de sounddevice que encola los datos de audio crudo en bytes."""
-        if status:
-            pass
-        if self.is_listening:
+        """Callback del stream de sounddevice para encolar audio."""
+        if self.is_running.is_set():
             self.audio_queue.put(bytes(indata))
 
     def _listen_loop(self):
-        """Bucle principal de procesamiento de audio en hilo secundario."""
+        """Bucle de procesamiento de audio en hilo secundario."""
         try:
             self._ensure_model()
-            if self.status_callback:
-                self.status_callback("🎤 Micrófono activo. Diga 'Enciéndete' para iniciar.")
+            self._notify_status("🎤 Micrófono activo. Diga 'Recopila' para iniciar.")
 
-            # Abrir stream de audio PCM 16000Hz, 16-bit mono
             with sd.RawInputStream(
                 samplerate=16000,
                 blocksize=4000,
@@ -99,9 +97,9 @@ class LSPVoiceService:
                 callback=self._audio_callback
             ) as stream:
                 self.stream = stream
-                while self.is_listening:
+                while self.is_running.is_set():
                     try:
-                        data = self.audio_queue.get(timeout=0.2)
+                        data = self.audio_queue.get(timeout=0.3)
                     except queue.Empty:
                         continue
 
@@ -115,27 +113,26 @@ class LSPVoiceService:
                         self._check_trigger(partial_text)
 
         except Exception as e:
-            if self.status_callback:
-                self.status_callback(f"Error en micrófono: {str(e)}")
+            self._notify_status(f"Error en micrófono: {str(e)}")
             self.stop()
 
     def _check_trigger(self, text: str):
-        """Evalúa si el texto reconocido contiene la palabra clave 'enciéndete'."""
+        """Evalúa si se detectó la palabra clave 'recopila' y despacha el evento de forma segura en la UI."""
         if not text:
             return
         
-        # Variantes fonéticas comunes capturadas por Vosk
-        keywords = ["enciendete", "enciende te", "enciendete", "enciende", "enciendet"]
-        
+        keywords = ["recopila", "recopilar", "recopilalo", "recopilarlo", "recopilame"]
         if any(kw in text for kw in keywords):
             now = time.time()
             if now - self.last_trigger_time > self.cooldown_seconds:
                 self.last_trigger_time = now
-                if self.status_callback:
-                    self.status_callback("🎤 ¡Palabra clave 'Enciéndete' detectada!")
-                if self.trigger_callback:
-                    # Ejecutar callback de activación en un hilo para no bloquear el audio
-                    threading.Thread(target=self.trigger_callback, daemon=True).start()
-                # Resetear el reconocedor para limpiar el buffer
+                self._notify_status("🎤 ¡Palabra clave 'Recopila' detectada!")
+                
+                if self.on_command_detected:
+                    if self.page and hasattr(self.page, "run_thread"):
+                        self.page.run_thread(self.on_command_detected)
+                    else:
+                        threading.Thread(target=self.on_command_detected, daemon=True).start()
+                
                 if self.recognizer:
                     self.recognizer.Reset()

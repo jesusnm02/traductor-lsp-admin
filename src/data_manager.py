@@ -170,8 +170,8 @@ class LSPDataManager:
             self.add_word_to_category(category_name, word_clean)
 
         seq_array = np.array(sequence_data, dtype=np.float32)
-        if seq_array.ndim != 2 or seq_array.shape[0] != 30:
-            raise ValueError(f"Dimensión de secuencia inválida. Esperado (30, N), recibido {seq_array.shape}")
+        if seq_array.ndim != 2 or seq_array.shape[0] < 5:
+            raise ValueError(f"Dimensión de secuencia inválida. Esperado (Frames, N), recibido {seq_array.shape}")
 
         idx = 0
         while True:
@@ -185,12 +185,12 @@ class LSPDataManager:
         df.to_csv(file_path, index=False)
         return file_path
 
-    def load_dataset_for_training(self, category_name: str):
+    def load_dataset_for_training(self, category_name: str, target_frames: int = None):
         """
         Carga el conjunto histórico de coordenadas para reentrenamiento completo.
         
         Returns:
-            X (np.ndarray): Tensor de entrada con forma (N_muestras, 30, N_features)
+            X (np.ndarray): Tensor de entrada con forma (N_muestras, target_frames, N_features)
             y (np.ndarray): Etiquetas numéricas (N_muestras,)
             label_map (dict): Diccionario de mapeo {etiqueta_numerica: "palabra"}
         """
@@ -206,6 +206,9 @@ class LSPDataManager:
         X_list = []
         y_list = []
 
+        # Detectar longitud esperada si no se especifica
+        expected_len = target_frames
+
         for word in words:
             word_dir = self._get_word_dir(category_name, word)
             if not os.path.exists(word_dir):
@@ -217,16 +220,19 @@ class LSPDataManager:
                 try:
                     df = pd.read_csv(file_path)
                     data = df.to_numpy(dtype=np.float32)
-                    if data.ndim == 2 and data.shape[0] == 30:
-                        X_list.append(data)
-                        y_list.append(reverse_map[word])
-                    else:
-                        print(f"Advertencia: Archivo {file_path} tiene dimensiones {data.shape}, omitiendo.")
+                    if data.ndim == 2:
+                        if expected_len is None:
+                            expected_len = data.shape[0]
+                        if data.shape[0] == expected_len:
+                            X_list.append(data)
+                            y_list.append(reverse_map[word])
+                        else:
+                            print(f"Advertencia: Archivo {file_path} tiene longitud {data.shape[0]} != {expected_len}, omitiendo.")
                 except Exception as e:
                     print(f"Error cargando {file_path}: {str(e)}")
 
         if len(X_list) == 0:
-            raise ValueError(f"No se encontraron muestras válidas de (30 frames) para entrenar la categoría '{category_name}'.")
+            raise ValueError(f"No se encontraron muestras válidas para entrenar la categoría '{category_name}'.")
 
         X = np.array(X_list, dtype=np.float32)
         y = np.array(y_list, dtype=np.int32)

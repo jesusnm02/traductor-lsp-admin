@@ -3,7 +3,7 @@ import json
 import time
 import threading
 import numpy as np
-from tensorflow.keras.models import load_model
+import tensorflow as tf
 import pyttsx3
 
 def speak_word_offline(word: str):
@@ -22,54 +22,23 @@ def speak_word_offline(word: str):
 
     threading.Thread(target=_tts_thread, daemon=True).start()
 
-class LiveTester:
+class LSPTesterService:
     """
-    Módulo de Pruebas y Validación en Vivo con Debounce e Inferencia con Voz (TTS).
+    Servicio Central de Pruebas e Inferencia en Tiempo Real para el Traductor LSP.
+    - Carga de forma desacoplada y segura el modelo binario ('model.keras') y las etiquetas ('labels.json').
+    - Estándar estricto bajo el directorio unificado 'data/modelos/'.
     - Ventana deslizante (30 frames) con normalización continua.
     - Confirmación sostenida por al menos 10 frames consecutivos con confianza > 85%.
-    - Actualización de tipografía gigante e indicador de barra de confianza.
-    - Síntesis de voz offline mediante pyttsx3 con regla de bloqueo de repetición.
+    - Pronunciación offline por voz con pyttsx3.
     """
-    def __init__(self, model_path: str, labels, page_ref=None):
-        """
-        Args:
-            model_path (str): Ruta al archivo binario .keras o .h5 del modelo.
-            labels (list o dict o str): Mapeo de índices a palabras o ruta a labels.json.
-            page_ref: Referencia a la página Flet para despacho seguro de hilos.
-        """
-        # 1. Validación defensiva estricta de formato de modelo binario
-        if not (model_path.endswith('.keras') or model_path.endswith('.h5')):
-            # Detectar si se pasaron los argumentos invertidos por error
-            if model_path.endswith('.json') and isinstance(labels, str) and (labels.endswith('.keras') or labels.endswith('.h5')):
-                model_path, labels = labels, model_path
-            else:
-                raise ValueError(f"Ruta de modelo inválida: {model_path}. Debe ser un archivo binario .keras o .h5")
-
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"No se encontró el archivo del modelo binario: {model_path}")
-
-        # 2. Cargar estrictamente el modelo binario con la API de Keras
-        self.model_path = model_path
-        self.model = load_model(model_path)
+    def __init__(self, model_base_dir="data/modelos", model_or_path=None, labels=None, page_ref=None):
+        self.model_base_dir = model_base_dir
+        self.model = None
+        self.labels = {}
         self.page = page_ref
-        
-        # 3. Carga independiente de etiquetas (Labels)
-        if isinstance(labels, str) and labels.endswith('.json') and os.path.exists(labels):
-            with open(labels, 'r', encoding='utf-8') as f:
-                label_data = json.load(f)
-                if isinstance(label_data, dict):
-                    self.labels = [label_data[str(i)] if str(i) in label_data else label_data[i] for i in range(len(label_data))]
-                elif isinstance(label_data, list):
-                    self.labels = label_data
-                else:
-                    self.labels = list(label_data)
-        elif isinstance(labels, dict):
-            self.labels = [labels[k] if k in labels else labels[str(k)] for k in range(len(labels))]
-        elif isinstance(labels, (list, tuple)):
-            self.labels = list(labels)
-        else:
-            self.labels = []
-            
+        self.model_path = ""
+
+        # Secuencia y estados de inferencia
         self.sequence = []
         self.is_active = False
 
@@ -87,6 +56,89 @@ class LiveTester:
         # Últimas métricas
         self.last_prediction = ""
         self.last_confidence = 0.0
+
+        # Inicialización directa si se proporcionan parámetros
+        if model_or_path is not None:
+            if isinstance(model_or_path, tf.keras.Model):
+                self.model = model_or_path
+                self.model_path = getattr(model_or_path, "name", "loaded_keras_model")
+                if labels is not None:
+                    self._set_labels(labels)
+            elif isinstance(model_or_path, str):
+                if os.path.isdir(model_or_path) or (not model_or_path.endswith('.keras') and not model_or_path.endswith('.h5')):
+                    self.load_trained_model(model_or_path)
+                else:
+                    self.model = tf.keras.models.load_model(model_or_path)
+                    self.model_path = model_or_path
+                    if labels is not None:
+                        self._set_labels(labels)
+
+    def load_trained_model(self, category_name):
+        """
+        Carga el modelo binario y su mapeo de etiquetas de texto.
+        category_name puede ser el nombre de la categoría (ej: 'numeros') o una ruta completa.
+        """
+        if os.path.isdir(category_name):
+            category_dir = category_name
+        else:
+            category_dir = os.path.join(self.model_base_dir, category_name.lower().strip())
+
+        model_path = os.path.join(category_dir, "model.keras")
+        labels_path = os.path.join(category_dir, "labels.json")
+
+        # 1. Validaciones físicas previas (Evita colisiones de lectura)
+        if not os.path.exists(model_path):
+            # Fallback por si existe un modelo antiguo .h5 en la transición
+            alt_path = os.path.join(category_dir, "model.h5")
+            if os.path.exists(alt_path):
+                model_path = alt_path
+            else:
+                raise FileNotFoundError(f"No se encontró el modelo 'model.keras' en {category_dir}")
+
+        if not os.path.exists(labels_path):
+            raise FileNotFoundError(f"No se encontró el archivo de etiquetas 'labels.json' en {category_dir}")
+
+        # 2. Carga del Modelo Binario (EXCLUSIVAMENTE con la API de Keras)
+        try:
+            # Forzar la carga limpia del archivo binario comprimido
+            self.model = tf.keras.models.load_model(model_path)
+            self.model_path = model_path
+            print(f"[TESTER] Modelo binario importado de forma segura desde: {model_path}")
+        except Exception as e:
+            raise RuntimeError(f"Error al abrir los pesos del modelo con Keras: {str(e)}")
+
+        # 3. Carga del archivo de Etiquetas de Texto (Utilizando UTF-8 limpio)
+        try:
+            with open(labels_path, "r", encoding="utf-8") as f:
+                raw_labels = json.load(f)
+            self._set_labels(raw_labels)
+            print(f"[TESTER] Archivo de mapeo de clases decodificado: {self.labels}")
+        except Exception as e:
+            raise RuntimeError(f"Error al decodificar etiquetas JSON: {str(e)}")
+
+        return True
+
+    def _set_labels(self, raw_labels):
+        """Normaliza las etiquetas para permitir indexación por entero o clave de cadena."""
+        if isinstance(raw_labels, dict):
+            self.labels = raw_labels
+            self.labels_list = [raw_labels[str(i)] if str(i) in raw_labels else raw_labels.get(i, f"Clase_{i}") for i in range(len(raw_labels))]
+        elif isinstance(raw_labels, (list, tuple)):
+            self.labels = {str(i): w for i, w in enumerate(raw_labels)}
+            self.labels_list = list(raw_labels)
+        else:
+            self.labels = {}
+            self.labels_list = []
+
+    def get_word_by_index(self, index: int) -> str:
+        """Retorna el nombre de la palabra para un índice de clase dado."""
+        if hasattr(self, "labels_list") and 0 <= index < len(self.labels_list):
+            return self.labels_list[index]
+        if str(index) in self.labels:
+            return self.labels[str(index)]
+        if index in self.labels:
+            return self.labels[index]
+        return f"Clase_{index}"
 
     def start(self):
         """Activa el modo de inferencia y resetea buffers."""
@@ -110,13 +162,13 @@ class LiveTester:
                       progress_bar_control=None, confidence_label_control=None, page_ref=None):
         """
         Procesa cada frame en la ventana deslizante, evalúa el sostenimiento de 10 frames > 85%
-        y activa la pronunciación TTS y la actualización de UI sin bloquear.
+        y activa la pronunciación TTS y la actualización de UI sin bloquear ni crashear.
         """
-        if not self.is_active:
+        if not self.is_active or self.model is None:
             return None, 0.0
 
         self.sequence.append(normalized_landmarks)
-        self.sequence = self.sequence[-30:] # Buffer de 30 frames
+        self.sequence = self.sequence[-30:]  # Buffer de 30 frames
 
         if len(self.sequence) == 30:
             input_tensor = np.expand_dims(self.sequence, axis=0)
@@ -125,7 +177,7 @@ class LiveTester:
             confidence = float(res[predicted_index])
             
             self.last_confidence = confidence
-            word = self.labels[predicted_index] if predicted_index < len(self.labels) else f"Clase_{predicted_index}"
+            word = self.get_word_by_index(predicted_index)
             page = page_ref if page_ref is not None else self.page
 
             # 1. Caso de Confianza Alta (> 85%)
@@ -144,7 +196,6 @@ class LiveTester:
                     self.last_prediction = word
 
                     # Regla de bloqueo de repetición:
-                    # Se pronuncia si es una palabra distinta o si ya pasó tiempo prudencial tras reiniciar
                     now = time.time()
                     should_speak = False
                     if word != self.last_spoken_word:
@@ -272,3 +323,12 @@ class LiveTester:
                 return None, confidence
 
         return None, 0.0
+
+# Alias de compatibilidad y desacoplamiento
+LiveTester = LSPTesterService
+
+def cargar_modelo_de_pruebas(ruta_categoria):
+    """Función de conveniencia para cargar el modelo de pruebas desacoplado."""
+    service = LSPTesterService()
+    service.load_trained_model(ruta_categoria)
+    return service.model, service.labels

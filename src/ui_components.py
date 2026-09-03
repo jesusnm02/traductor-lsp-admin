@@ -3,12 +3,11 @@ import glob
 import json
 import threading
 import flet as ft
-from src.data_manager import LSPDataManager
+from src.data_manager import LSPDataManager, LSPDatasetManager
 from src.vision_service import LSPVisionService
-from src.trainer import LSPTrainer
+from src.model_trainer import ModelTrainer, LSPTrainer
 from src.voice_service import LSPVoiceService
-from src.model_trainer import ModelTrainer
-from src.tester_service import LiveTester
+from src.tester_service import LSPTesterService, LiveTester, cargar_modelo_de_pruebas
 
 EMPTY_PIXEL_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 
@@ -72,18 +71,22 @@ def show_snack_bar(page: ft.Page, message: str, is_error: bool = False):
 class LSPUIController:
     """
     Controlador central de la interfaz escolar de administración para Traductor LSP (v4).
-    - Carga estricta y defensiva de modelos Keras (.h5/.keras) y etiquetas JSON sin errores UTF-8.
-    - Protección absoluta contra crashes por sesiones destruidas de Flet (update_ui_safely).
+    - Unificación absoluta bajo la carpeta 'data/':
+        - Muestras: data/muestras/{categoria}/{palabra}/
+        - Modelos: data/modelos/{categoria}/model.keras y labels.json
+    - Carga estricta y desacoplada de modelos Keras (.keras nativo) y etiquetas JSON sin errores UTF-8.
+    - Protección contra crashes por sesiones destruidas de Flet (update_ui_safely).
     - Navegación por pestañas nativas ft.Tabs visible y con prevención de colisiones de cámara.
-    - Lista de palabras en contenedor con scroll vertical de alta fluidez (height=240).
+    - Lista de palabras en contenedor con scroll vertical fluido (height=240, ScrollMode.ALWAYS).
     - Deslizadores de configuración reubicados en la parte inferior del panel izquierdo.
     """
-    def __init__(self, page: ft.Page, data_manager: LSPDataManager, vision_service: LSPVisionService, trainer: LSPTrainer):
+    def __init__(self, page: ft.Page, data_manager: LSPDataManager, vision_service: LSPVisionService, trainer=None, tester_service=None):
         self.page = page
-        self.data_manager = data_manager
+        self.data_manager = data_manager if data_manager is not None else LSPDatasetManager(base_dir="data/muestras")
         self.vision_service = vision_service
-        self.trainer = trainer
-        self.model_trainer = ModelTrainer(sequence_length=30, features=255)
+        self.trainer = trainer if trainer is not None else LSPTrainer(self.data_manager, export_base_dir="data/modelos")
+        self.model_trainer = ModelTrainer(dataset_manager=self.data_manager, sequence_length=30, features=255, export_base_dir="data/modelos")
+        self.live_tester = tester_service if tester_service is not None else LSPTesterService(model_base_dir="data/modelos", page_ref=page)
 
         # Referencia a pestañas para control de contexto
         self.tabs = None
@@ -92,9 +95,6 @@ class LSPUIController:
         self.selected_category = None
         self.selected_word = None
         self.is_camera_active = False
-
-        # Estado de validación en vivo
-        self.live_tester = None
         self.is_testing = False
 
         # Referencia al diálogo modal de muestras
@@ -176,7 +176,7 @@ class LSPUIController:
         # Lista de palabras con scroll siempre activo ("tipo slider vertical")
         self.words_listview = ft.ListView(
             expand=True,
-            scroll=ft.ScrollMode.ALWAYS, # Forzar barra de scroll vertical
+            scroll=ft.ScrollMode.ALWAYS,
             spacing=10
         )
 
@@ -324,7 +324,7 @@ class LSPUIController:
             width=360
         )
         self.test_status_text = ft.Text(
-            value="Seleccione un modelo (.h5/.keras) y pulse 'Iniciar Prueba' para validar señas en vivo.",
+            value="Seleccione un modelo (.keras) y pulse 'Iniciar Prueba' para validar señas en vivo.",
             size=12,
             color=COLOR_TEXT_MUTED
         )
@@ -437,14 +437,6 @@ class LSPUIController:
         update_ui_safely(self.status_text)
 
     def on_voice_trigger_detected(self):
-        """
-        REGLA DE SEGURIDAD ESTRICTA:
-        El comando 'recopila' solo se ejecuta si:
-        1. voice_service.allow_voice_trigger es True.
-        2. La pestaña activa es Captura (índice 0).
-        3. La cámara web está encendida.
-        4. La máquina de visión está en estado 'Inactivo'.
-        """
         if not getattr(self.voice_service, "allow_voice_trigger", True):
             print("[Voz] Comando 'recopila' ignorado: allow_voice_trigger está desactivado.")
             return
@@ -975,21 +967,27 @@ class LSPUIController:
 
         threading.Thread(target=_async_cnn_train, daemon=True).start()
 
-    # --- MÓDULO DE PRUEBAS: CARGA SEGURA Y DEFENSIVA DE MODELOS ---
+    # --- MÓDULO DE PRUEBAS: CARGA SEGURA DESDE data/modelos/ ---
 
     def load_trained_models_to_test_dropdown(self):
-        """Escanea 'modelos/' buscando exclusivamente archivos binarios .h5 y .keras (sin .json)."""
-        os.makedirs('modelos', exist_ok=True)
-        model_files = glob.glob('modelos/modelo_LSP_*.h5') + glob.glob('modelos/modelo_LSP_*.keras')
-        
+        """
+        Escanea 'data/modelos/' buscando categorías entrenadas válidas.
+        Valida que existan tanto el modelo binario (.keras) como las etiquetas (labels.json),
+        verificando únicamente tamaño físico > 0 y NUNCA abriendo el binario como texto.
+        """
         categories = set()
-        for mf in model_files:
-            if mf.endswith('.json'):
-                continue
-            base = os.path.basename(mf)
-            cat = base.replace("modelo_LSP_", "").replace(".h5", "").replace(".keras", "")
-            if cat and not cat.endswith("_labels"):
-                categories.add(cat)
+        model_base_dir = "data/modelos"
+        os.makedirs(model_base_dir, exist_ok=True)
+        
+        if os.path.exists(model_base_dir):
+            for item in os.listdir(model_base_dir):
+                dir_path = os.path.join(model_base_dir, item)
+                if os.path.isdir(dir_path):
+                    has_model = (os.path.exists(os.path.join(dir_path, "model.keras")) and os.path.getsize(os.path.join(dir_path, "model.keras")) > 0) or \
+                                (os.path.exists(os.path.join(dir_path, "model.h5")) and os.path.getsize(os.path.join(dir_path, "model.h5")) > 0)
+                    has_labels = os.path.exists(os.path.join(dir_path, "labels.json"))
+                    if has_model and has_labels:
+                        categories.add(item.lower().strip())
 
         cat_list = sorted(list(categories))
         self.test_category_dropdown.options = [
@@ -1006,7 +1004,19 @@ class LSPUIController:
     def on_test_category_selected(self, e):
         cat = self.test_category_dropdown.value
         if cat:
-            self.test_status_text.value = f"Modelo seleccionado: categoría {cat.upper()} listo para validar."
+            candidate_paths = [
+                os.path.join("data/modelos", cat, "model.keras"),
+                os.path.join("data/modelos", cat, "model.h5"),
+            ]
+            valid_model = any(os.path.exists(cp) and os.path.getsize(cp) > 0 for cp in candidate_paths)
+
+            if valid_model:
+                self.test_status_text.value = f"Modelo verificado para categoría '{cat.upper()}'. Listo para iniciar prueba."
+                self.test_status_text.color = COLOR_SUCCESS
+            else:
+                self.test_status_text.value = f"Atención: No se encontró el binario del modelo para '{cat.upper()}'."
+                self.test_status_text.color = COLOR_REC_BTN
+
             update_ui_safely(self.test_status_text)
 
     def toggle_live_test(self, e):
@@ -1016,39 +1026,12 @@ class LSPUIController:
                 show_snack_bar(self.page, "Debe seleccionar un modelo entrenado para probar", is_error=True)
                 return
 
-            # 1. Localizar estrictamente el modelo binario (.keras o .h5)
-            model_path = f"modelos/modelo_LSP_{cat}.keras"
-            if not os.path.exists(model_path):
-                model_path = f"modelos/modelo_LSP_{cat}.h5"
-
-            if not os.path.exists(model_path):
-                show_snack_bar(self.page, f"No se encontró el archivo del modelo binario: {model_path}", is_error=True)
-                return
-
-            # Validación defensiva de formato binario
-            if not (model_path.endswith('.keras') or model_path.endswith('.h5')):
-                raise ValueError(f"Ruta de modelo inválida: {model_path}. Debe ser un archivo .keras o .h5")
-
-            # 2. Cargar etiquetas estrictamente del JSON independiente
-            labels_path = f"modelos/modelo_LSP_{cat}_labels.json"
-            labels = []
-            if os.path.exists(labels_path):
-                try:
-                    with open(labels_path, 'r', encoding='utf-8') as f:
-                        label_map = json.load(f)
-                        if isinstance(label_map, dict):
-                            labels = [label_map[str(i)] if str(i) in label_map else label_map[i] for i in range(len(label_map))]
-                        elif isinstance(label_map, list):
-                            labels = label_map
-                except Exception as ex_json:
-                    print(f"Error leyendo {labels_path}: {ex_json}")
-                    labels = self.data_manager.get_words_in_category(cat)
-            else:
-                labels = self.data_manager.get_words_in_category(cat)
-
             try:
-                # 3. Inicializar LiveTester con modelo binario y labels
-                self.live_tester = LiveTester(model_path=model_path, labels=labels, page_ref=self.page)
+                # Carga desacoplada desde data/modelos/{cat}/
+                if not hasattr(self, "live_tester") or self.live_tester is None:
+                    self.live_tester = LSPTesterService(model_base_dir="data/modelos", page_ref=self.page)
+
+                self.live_tester.load_trained_model(cat)
                 self.live_tester.start()
 
                 # Desactivar trigger de voz durante pruebas
@@ -1071,12 +1054,16 @@ class LSPUIController:
                 self.lbl_prediction.color = COLOR_TEXT_TITLE
                 self.lbl_confidence.value = "Confianza: 0%"
                 self.progress_bar_prediction.value = 0.0
-                self.test_status_text.value = f"🔴 Prueba en vivo activa: {cat.upper()} ({len(labels)} clases). Voz activada."
+                num_classes = len(getattr(self.live_tester, "labels_list", self.live_tester.labels))
+                self.test_status_text.value = f"🔴 Prueba activa: {cat.upper()} ({num_classes} clases). Modelo nativo .keras cargado."
                 self.test_status_text.color = COLOR_SUCCESS
                 show_snack_bar(self.page, f"Prueba iniciada para '{cat.upper()}'. Realice señas frente a la cámara.")
 
             except Exception as ex:
                 show_snack_bar(self.page, f"Error cargando modelo: {str(ex)}", is_error=True)
+                self.test_status_text.value = f"Error cargando modelo: {str(ex)}"
+                self.test_status_text.color = COLOR_REC_BTN
+                print(f"[ERROR CARGA MODELO] {str(ex)}")
 
         else:
             if self.live_tester:
@@ -1137,7 +1124,7 @@ def build_training_view(controller: LSPUIController) -> ft.Container:
     # 1. Contenedor Scrollable de Palabras (Scroll Adaptativo Vertical Obligatorio)
     words_scrollable_container = ft.Container(
         content=controller.words_listview,
-        height=240, # Altura controlada para no empujar el resto de elementos
+        height=240,
         border=ft.Border.all(1, "#D1E4F8"),
         border_radius=12,
         bgcolor="#FFFFFF",
@@ -1252,7 +1239,7 @@ def build_training_view(controller: LSPUIController) -> ft.Container:
 def build_live_testing_view(controller: LSPUIController) -> ft.Container:
     """
     Construye la vista de Pruebas y Validación en Vivo (Traductor):
-    - Selector de modelos entrenados de la carpeta modelos/.
+    - Selector de modelos entrenados de data/modelos/.
     - Monitor de cámara web (480x360).
     - Tarjeta gigante blanca con la palabra traducida y barra de confianza.
     - Síntesis de voz offline con pyttsx3.
@@ -1272,7 +1259,7 @@ def build_live_testing_view(controller: LSPUIController) -> ft.Container:
                 ft.IconButton(
                     icon=ft.Icons.REFRESH,
                     icon_color=COLOR_PRIMARY,
-                    tooltip="Recargar modelos de la carpeta modelos/",
+                    tooltip="Recargar modelos de la carpeta data/modelos/",
                     on_click=lambda e: controller.load_trained_models_to_test_dropdown()
                 )
             ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),

@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 class LSPDataManager:
-    def __init__(self, base_dir="data_historica"):
+    def __init__(self, base_dir="data/muestras"):
         """
         Gestor de persistencia de datos y metadatos para el traductor LSP.
         
@@ -14,7 +14,7 @@ class LSPDataManager:
         """
         self.base_dir = base_dir
         if not os.path.exists(self.base_dir):
-            os.makedirs(self.base_dir)
+            os.makedirs(self.base_dir, exist_ok=True)
 
     def _get_category_dir(self, category_name: str) -> str:
         """Retorna la ruta del directorio físico de una categoría."""

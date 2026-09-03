@@ -10,7 +10,7 @@ import subprocess
 from src.data_manager import LSPDataManager
 
 class LSPTrainer:
-    def __init__(self, dataset_manager: LSPDataManager, export_base_dir="modelos_exportados"):
+    def __init__(self, dataset_manager: LSPDataManager, export_base_dir="data/modelos"):
         """
         Clase encargada de entrenar las redes neuronales por categoría y exportarlas a TensorFlow.js.
         
@@ -21,7 +21,7 @@ class LSPTrainer:
         self.dataset_manager = dataset_manager
         self.export_base_dir = export_base_dir
         if not os.path.exists(self.export_base_dir):
-            os.makedirs(self.export_base_dir)
+            os.makedirs(self.export_base_dir, exist_ok=True)
 
     def build_model(self, num_classes, input_shape=(30, 255)):
         """

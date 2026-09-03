@@ -10,9 +10,10 @@ if sys.platform.startswith("win"):
     except Exception:
         pass
 
-from src.data_manager import LSPDataManager
+from src.data_manager import LSPDatasetManager
+from src.model_trainer import LSPTrainer
+from src.tester_service import LSPTesterService
 from src.vision_service import LSPVisionService
-from src.trainer import LSPTrainer
 from src.ui_components import LSPUIController, build_main_app_tabs
 
 def main(page: ft.Page):
@@ -32,13 +33,23 @@ def main(page: ft.Page):
         page.window_height = 840
         page.window_resizable = True
 
-    # Inicializar componentes del Backend con despacho seguro a través de page
-    data_manager = LSPDataManager()
+    # =========================================================================
+    # INICIALIZACIÓN UNIFICADA BAJO LA CAPA 'data/' (unificacion_data_y_modelos.md)
+    # =========================================================================
+    # 1. El gestor de datos apunta a las muestras
+    db_manager = LSPDatasetManager(base_dir="data/muestras")
+
+    # 2. El entrenador apunta al gestor y guarda en la carpeta de modelos de data/
+    trainer = LSPTrainer(db_manager, export_base_dir="data/modelos")
+
+    # 3. El probador en vivo busca los modelos en la misma carpeta unificada
+    tester_service = LSPTesterService(model_base_dir="data/modelos", page_ref=page)
+
+    # Servicio de visión por computadora
     vision_service = LSPVisionService(page_ref=page)
-    trainer = LSPTrainer(data_manager)
     
     # Inicializar controlador de UI y ensamblar control nativo ft.Tabs
-    ui_controller = LSPUIController(page, data_manager, vision_service, trainer)
+    ui_controller = LSPUIController(page, db_manager, vision_service, trainer, tester_service)
     tabs = build_main_app_tabs(ui_controller)
 
     # Banner superior permanente de estado (Visible de inmediato)
@@ -74,7 +85,7 @@ def main(page: ft.Page):
         ], expand=True, spacing=6)
     )
 
-    # Apagado coordinado en on_disconnect para detener bucles infinitos
+    # Apagado coordinado en on_disconnect para detener bucles en segundo plano
     def on_disconnect(e=None):
         try:
             ui_controller.close()

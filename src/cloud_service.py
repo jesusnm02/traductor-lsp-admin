@@ -255,42 +255,119 @@ class LSPCloudService:
 
     ALLOWED_EXTENSIONS = [".gif", ".png", ".jpg", ".jpeg", ".mp4"]
 
+    def get_recursos_locales_dir(self, category: str) -> str:
+        """Retorna la ruta absoluta del directorio data/recursos_locales/{categoria}."""
+        return os.path.join(DATA_DIR, "recursos_locales", category.lower().strip())
+
     def get_word_dir(self, category: str, word: str) -> str:
-        """Retorna la ruta absoluta del directorio local de la palabra."""
+        """Retorna la ruta absoluta del directorio local de la palabra en data/muestras."""
         return os.path.join(DATA_DIR, "muestras", category.lower().strip(), word.lower().strip())
 
     def get_local_resource_path(self, category: str, word: str) -> str:
         """
-        Retorna la ruta al archivo multimedia guía local (ej. guia.gif o guia.png) si existe.
+        Retorna la ruta al archivo multimedia guía local (ej. <palabra>_avatar.gif, guia.gif o <palabra>.png) si existe.
         """
-        word_dir = self.get_word_dir(category, word)
-        if not os.path.exists(word_dir):
-            return None
+        cat_clean = category.lower().strip()
+        w_clean = word.lower().strip()
 
-        # Priorizar nombres estándar: guia.*, luego <palabra>.*
-        candidates = ["guia", word.lower().strip()]
-        for base in candidates:
+        # 1. Buscar en data/recursos_locales/{categoria}/
+        rec_dir = self.get_recursos_locales_dir(cat_clean)
+        if os.path.exists(rec_dir):
             for ext in self.ALLOWED_EXTENSIONS:
-                candidate_path = os.path.join(word_dir, f"{base}{ext}")
-                if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 0:
-                    return candidate_path
+                for base in [f"{w_clean}_avatar", w_clean, "guia"]:
+                    p = os.path.join(rec_dir, f"{base}{ext}")
+                    if os.path.exists(p) and os.path.getsize(p) > 0:
+                        return p
 
-        # Si hay cualquier archivo con extensiones permitidas
-        try:
-            for f in os.listdir(word_dir):
-                name, ext = os.path.splitext(f)
-                if ext.lower() in self.ALLOWED_EXTENSIONS:
-                    fp = os.path.join(word_dir, f)
-                    if os.path.getsize(fp) > 0:
-                        return fp
-        except Exception:
-            pass
+        # 2. Buscar en data/muestras/{categoria}/{palabra}/
+        word_dir = self.get_word_dir(cat_clean, w_clean)
+        if os.path.exists(word_dir):
+            for ext in self.ALLOWED_EXTENSIONS:
+                for base in ["guia", f"{w_clean}_avatar", w_clean]:
+                    p = os.path.join(word_dir, f"{base}{ext}")
+                    if os.path.exists(p) and os.path.getsize(p) > 0:
+                        return p
 
         return None
 
+    def save_avatar_recording(self, category: str, word: str, frames: list, fps: int = 20) -> str:
+        """
+        Compila una lista de frames (OpenCV BGR) en un archivo GIF animado optimizado
+        y lo guarda en data/recursos_locales/{categoria}/{palabra}_avatar.gif.
+        También genera copia en data/muestras/{categoria}/{palabra}/guia.gif.
+        """
+        if not frames:
+            raise ValueError("No hay frames para compilar el avatar.")
+
+        from PIL import Image
+        import cv2
+
+        cat_clean = category.lower().strip()
+        word_clean = word.lower().strip()
+
+        rec_dir = self.get_recursos_locales_dir(cat_clean)
+        os.makedirs(rec_dir, exist_ok=True)
+        primary_path = os.path.join(rec_dir, f"{word_clean}_avatar.gif")
+
+        word_dir = self.get_word_dir(cat_clean, word_clean)
+        os.makedirs(word_dir, exist_ok=True)
+        alt_path = os.path.join(word_dir, "guia.gif")
+
+        pil_images = []
+        for f in frames:
+            small = cv2.resize(f, (360, 270))
+            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            pil_images.append(Image.fromarray(rgb))
+
+        duration_ms = max(25, int(1000 / max(1, fps)))
+        pil_images[0].save(
+            primary_path,
+            save_all=True,
+            append_images=pil_images[1:],
+            optimize=True,
+            duration=duration_ms,
+            loop=0
+        )
+        try:
+            shutil.copy2(primary_path, alt_path)
+        except Exception:
+            pass
+
+        print(f"[CLOUD] Avatar GIF guardado en: {primary_path}")
+        return primary_path
+
+    def save_avatar_snapshot(self, category: str, word: str, frame) -> str:
+        """
+        Guarda un fotograma estático del avatar en PNG en
+        data/recursos_locales/{categoria}/{palabra}_avatar.png.
+        También genera copia en data/muestras/{categoria}/{palabra}/guia.png.
+        """
+        import cv2
+
+        cat_clean = category.lower().strip()
+        word_clean = word.lower().strip()
+
+        rec_dir = self.get_recursos_locales_dir(cat_clean)
+        os.makedirs(rec_dir, exist_ok=True)
+        primary_path = os.path.join(rec_dir, f"{word_clean}_avatar.png")
+
+        word_dir = self.get_word_dir(cat_clean, word_clean)
+        os.makedirs(word_dir, exist_ok=True)
+        alt_path = os.path.join(word_dir, "guia.png")
+
+        cv2.imwrite(primary_path, frame)
+        try:
+            shutil.copy2(primary_path, alt_path)
+        except Exception:
+            pass
+
+        print(f"[CLOUD] Foto del Avatar guardada en: {primary_path}")
+        return primary_path
+
     def save_local_resource(self, category: str, word: str, source_path: str) -> str:
         """
-        Copia un archivo externo seleccionado por el docente a la carpeta local de la palabra:
+        Copia un archivo externo seleccionado por el docente a:
+        data/recursos_locales/{categoria}/{palabra}_avatar.[ext] y
         data/muestras/{categoria}/{palabra}/guia.[ext]
         """
         if not os.path.exists(source_path):
@@ -301,22 +378,21 @@ class LSPCloudService:
         if ext not in self.ALLOWED_EXTENSIONS:
             raise ValueError(f"Extensión '{ext}' no permitida. Formatos soportados: {', '.join(self.ALLOWED_EXTENSIONS)}")
 
-        word_dir = self.get_word_dir(category, word)
+        cat_clean = category.lower().strip()
+        word_clean = word.lower().strip()
+
+        rec_dir = self.get_recursos_locales_dir(cat_clean)
+        os.makedirs(rec_dir, exist_ok=True)
+        primary_path = os.path.join(rec_dir, f"{word_clean}_avatar{ext}")
+        shutil.copy2(source_path, primary_path)
+
+        word_dir = self.get_word_dir(cat_clean, word_clean)
         os.makedirs(word_dir, exist_ok=True)
+        alt_path = os.path.join(word_dir, f"guia{ext}")
+        shutil.copy2(source_path, alt_path)
 
-        # Eliminar guías locales previas para mantener un único recurso por seña
-        for old_ext in self.ALLOWED_EXTENSIONS:
-            old_file = os.path.join(word_dir, f"guia{old_ext}")
-            if os.path.exists(old_file):
-                try:
-                    os.remove(old_file)
-                except Exception:
-                    pass
-
-        target_path = os.path.join(word_dir, f"guia{ext}")
-        shutil.copy2(source_path, target_path)
-        print(f"[CLOUD] Recurso local guardado: {target_path}")
-        return target_path
+        print(f"[CLOUD] Recurso local guardado: {primary_path}")
+        return primary_path
 
     def list_cloud_resources_for_category(self, category: str) -> dict:
         """
@@ -343,13 +419,16 @@ class LSPCloudService:
                         word_name, ext = os.path.splitext(filename)
                         word_name = word_name.lower().strip()
                         if ext.lower() in self.ALLOWED_EXTENSIONS:
-                            resources[word_name] = {
+                            item = {
                                 "key": key,
                                 "filename": filename,
                                 "ext": ext.lower(),
                                 "last_modified": obj['LastModified'].timestamp(),
                                 "size": obj['Size']
                             }
+                            resources[word_name] = item
+                            clean_word = word_name.replace("_avatar", "").strip()
+                            resources[clean_word] = item
             return resources
         except Exception as e:
             print(f"[CLOUD] Error listando recursos didácticos de '{cat_clean}' en S3: {e}")
@@ -438,10 +517,10 @@ class LSPCloudService:
             ".mp4": "video/mp4"
         }
         content_type = content_types.get(ext, "application/octet-stream")
-        s3_key = f"recursos/{cat_clean}/{word_clean}{ext}"
+        s3_key = f"recursos/{cat_clean}/{word_clean}_avatar{ext}"
 
         if progress_callback:
-            progress_callback(0.5, f"Subiendo guía didáctica '{word_clean}{ext}' a AWS S3...")
+            progress_callback(0.5, f"Subiendo avatar '{word_clean}_avatar{ext}' a AWS S3...")
 
         try:
             self.s3_client.upload_file(
@@ -451,17 +530,14 @@ class LSPCloudService:
                 ExtraArgs={'ContentType': content_type}
             )
             if progress_callback:
-                progress_callback(1.0, f"¡Recurso didáctico '{word_clean}{ext}' subido a S3!")
+                progress_callback(1.0, f"¡Recurso didáctico '{word_clean}_avatar{ext}' subido a S3!")
             print(f"[CLOUD] Recurso subido exitosamente: {file_path} -> s3://{self.bucket_name}/{s3_key}")
             return True
         except Exception as e:
             raise RuntimeError(f"Error subiendo recurso didáctico a S3: {str(e)}")
 
-    def delete_resource(self, category: str, word: str, delete_local: bool = True) -> bool:
-        """
-        Borra el recurso didáctico de S3 (recursos/{categoria}/{palabra}.*)
-        y opcionalmente de la carpeta local.
-        """
+    def delete_resource_s3(self, category: str, word: str) -> bool:
+        """Borra el recurso didáctico de AWS S3 (recursos/{categoria}/{palabra}_avatar.*)."""
         if not self.s3_client:
             self._init_client()
             if not self.s3_client:
@@ -470,28 +546,60 @@ class LSPCloudService:
         cat_clean = category.lower().strip()
         word_clean = word.lower().strip()
 
-        # 1. Borrar en S3 todos los archivos coincidentes con recursos/{cat}/{palabra}.*
-        prefix = f"recursos/{cat_clean}/{word_clean}."
-        try:
-            response = self.s3_client.list_objects_v2(Bucket=self.bucket_name, Prefix=prefix)
-            if 'Contents' in response and len(response['Contents']) > 0:
-                delete_us = [{'Key': obj['Key']} for obj in response['Contents']]
-                self.s3_client.delete_objects(Bucket=self.bucket_name, Delete={'Objects': delete_us})
-                print(f"[CLOUD] Eliminados {len(delete_us)} objetos en S3 para '{word_clean}'")
-        except Exception as e:
-            raise RuntimeError(f"Error borrando de S3: {str(e)}")
+        prefixes = [
+            f"recursos/{cat_clean}/{word_clean}_avatar.",
+            f"recursos/{cat_clean}/{word_clean}."
+        ]
+        deleted_count = 0
+        for prefix in prefixes:
+            try:
+                response = self.s3_client.list_objects_v2(Bucket=self.bucket_name, Prefix=prefix)
+                if 'Contents' in response and len(response['Contents']) > 0:
+                    delete_us = [{'Key': obj['Key']} for obj in response['Contents']]
+                    self.s3_client.delete_objects(Bucket=self.bucket_name, Delete={'Objects': delete_us})
+                    deleted_count += len(delete_us)
+            except Exception as e:
+                raise RuntimeError(f"Error borrando de S3: {str(e)}")
 
-        # 2. Borrar archivo local si delete_local está activo
+        print(f"[CLOUD] Eliminados {deleted_count} objetos en S3 para '{word_clean}'")
+        return True
+
+    def delete_resource_local(self, category: str, word: str) -> bool:
+        """Borra el archivo multimedia guardado en el disco duro de la PC."""
+        cat_clean = category.lower().strip()
+        word_clean = word.lower().strip()
+
+        # 1. En data/recursos_locales/{categoria}/
+        rec_dir = self.get_recursos_locales_dir(cat_clean)
+        if os.path.exists(rec_dir):
+            for f in os.listdir(rec_dir):
+                base, ext = os.path.splitext(f)
+                if (base == f"{word_clean}_avatar" or base == word_clean) and ext.lower() in self.ALLOWED_EXTENSIONS:
+                    try:
+                        os.remove(os.path.join(rec_dir, f))
+                        print(f"[CLOUD] Archivo local eliminado de recursos_locales: {f}")
+                    except Exception:
+                        pass
+
+        # 2. En data/muestras/{categoria}/{palabra}/
+        word_dir = self.get_word_dir(cat_clean, word_clean)
+        if os.path.exists(word_dir):
+            for f in os.listdir(word_dir):
+                base, ext = os.path.splitext(f)
+                if (base == "guia" or base == f"{word_clean}_avatar" or base == word_clean) and ext.lower() in self.ALLOWED_EXTENSIONS:
+                    try:
+                        os.remove(os.path.join(word_dir, f))
+                        print(f"[CLOUD] Archivo local eliminado de muestras: {f}")
+                    except Exception:
+                        pass
+
+        return True
+
+    def delete_resource(self, category: str, word: str, delete_local: bool = True) -> bool:
+        """
+        Borra el recurso didáctico de S3 y opcionalmente de la carpeta local.
+        """
+        self.delete_resource_s3(category, word)
         if delete_local:
-            word_dir = self.get_word_dir(cat_clean, word_clean)
-            if os.path.exists(word_dir):
-                for f in os.listdir(word_dir):
-                    base, ext = os.path.splitext(f)
-                    if (base == "guia" or base == word_clean) and ext.lower() in self.ALLOWED_EXTENSIONS:
-                        try:
-                            os.remove(os.path.join(word_dir, f))
-                            print(f"[CLOUD] Archivo local eliminado: {f}")
-                        except Exception:
-                            pass
-
+            self.delete_resource_local(category, word)
         return True

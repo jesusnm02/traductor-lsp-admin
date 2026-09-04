@@ -1,8 +1,11 @@
 import os
+import sys
 import glob
 import json
 import threading
 import time
+import base64
+import cv2
 import flet as ft
 from src.data_manager import LSPDataManager, LSPDatasetManager
 from src.vision_service import LSPVisionService
@@ -114,6 +117,33 @@ class LSPUIController:
         self.lbl_cloud_status = ft.Text("Consola de Transferencia: Listo para sincronizar modelos y guías didácticas con AWS S3.", size=12, weight=ft.FontWeight.W_500, color=COLOR_TEXT_TITLE, expand=True)
         self.cloud_progress_ring = ft.ProgressRing(width=16, height=16, stroke_width=2, color=COLOR_PRIMARY, visible=False)
         self.cloud_statuses = {}
+
+        # Asegurar overlay seguro para compatibilidad con controles de servicio (Flet 0.86+)
+        if hasattr(self.page, "_overlay") and hasattr(self.page._overlay, "controls"):
+            if not getattr(self.page, "_safe_overlay_installed", False):
+                original_overlay = self.page._overlay.controls
+                page_ref = self.page
+                class SafeOverlayList(list):
+                    def __init__(self, target):
+                        super().__init__(target)
+                        self._target = target
+                        self._virtual_services = []
+
+                    def append(self, item):
+                        if isinstance(item, ft.FilePicker):
+                            if item not in self._virtual_services:
+                                self._virtual_services.append(item)
+                            if hasattr(page_ref, "services") and item not in page_ref.services:
+                                page_ref.services.append(item)
+                            return
+                        self._target.append(item)
+                        super().append(item)
+
+                    def __contains__(self, item):
+                        return item in self._virtual_services or super().__contains__(item) or item in self._target
+
+                self.page._overlay.controls = SafeOverlayList(original_overlay)
+                self.page._safe_overlay_installed = True
 
         # FilePicker para asociación de recursos didácticos
         self.file_picker = ft.FilePicker()
@@ -1526,15 +1556,17 @@ class LSPUIController:
                         res_status = self.cloud_service.check_resource_status(cat_clean, word, cloud_resources)
                         st = res_status["status"]
                         local_path = res_status["local_path"]
-                        has_local = (local_path is not None)
+                        has_local = (local_path is not None and os.path.exists(local_path))
+                        has_cloud = (st == "SINCRONIZADO" or st == "PENDIENTE")
 
-                        # 1. Miniatura / Estado Local
+                        # 1. Estado Local: 🟢 "Avatar Listo" / ⚫ "Sin Guía Visual"
                         if has_local:
                             filename = os.path.basename(local_path)
                             badge_local = ft.Container(
                                 content=ft.Row([
-                                    ft.Icon(ft.Icons.IMAGE, size=15, color=COLOR_SUCCESS),
-                                    ft.Text(filename, size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.W_600)
+                                    ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, size=14, color=COLOR_SUCCESS),
+                                    ft.Text("Avatar Listo", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.BOLD),
+                                    ft.Text(f"({filename})", size=10, color="#15803D", weight=ft.FontWeight.W_500)
                                 ], spacing=4),
                                 bgcolor="#DCFCE7",
                                 border_radius=6,
@@ -1544,35 +1576,36 @@ class LSPUIController:
                         else:
                             badge_local = ft.Container(
                                 content=ft.Row([
-                                    ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED_OUTLINED, size=15, color=COLOR_TEXT_MUTED),
-                                    ft.Text("Sin guía local", size=11, color=COLOR_TEXT_MUTED)
-                                ], spacing=4),
+                                    ft.Icon(ft.Icons.CIRCLE, size=10, color=COLOR_TEXT_MUTED),
+                                    ft.Text("Sin Guía Visual", size=11, color=COLOR_TEXT_MUTED, weight=ft.FontWeight.W_500)
+                                ], spacing=5),
                                 bgcolor="#F1F5F9",
                                 border_radius=6,
                                 padding=ft.Padding(8, 4, 8, 4)
                             )
 
-                        # 2. Estado en S3
+                        # 2. Estado en S3: 🚀 "Publicado" / ⚠️ "Desactualizado" / ☁️ "No en S3"
                         if st == "SINCRONIZADO":
                             badge_s3 = ft.Container(
                                 content=ft.Row([
                                     ft.Text("🚀", size=12),
-                                    ft.Text("Sincronizado", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.BOLD)
+                                    ft.Text("Publicado", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.BOLD)
                                 ], spacing=4),
                                 bgcolor="#E8F5E9",
                                 border_radius=6,
-                                padding=ft.Padding(8, 4, 8, 4)
+                                padding=ft.Padding(8, 4, 8, 4),
+                                tooltip="El archivo local coincide perfectamente con el almacenado en S3"
                             )
                         elif st == "PENDIENTE":
                             badge_s3 = ft.Container(
                                 content=ft.Row([
                                     ft.Text("⚠️", size=12),
-                                    ft.Text("Pendiente", size=11, color="#E65100", weight=ft.FontWeight.BOLD)
+                                    ft.Text("Desactualizado", size=11, color="#E65100", weight=ft.FontWeight.BOLD)
                                 ], spacing=4),
                                 bgcolor="#FFF3E0",
                                 border_radius=6,
                                 padding=ft.Padding(8, 4, 8, 4),
-                                tooltip="El archivo local fue modificado o aún no se ha subido a S3"
+                                tooltip="El avatar local se volvió a grabar/reemplazar, pero no se ha subido a AWS"
                             )
                         else:  # NO_EN_S3
                             badge_s3 = ft.Container(
@@ -1582,35 +1615,63 @@ class LSPUIController:
                                 ], spacing=4),
                                 bgcolor="#ECEFF1",
                                 border_radius=6,
-                                padding=ft.Padding(8, 4, 8, 4)
+                                padding=ft.Padding(8, 4, 8, 4),
+                                tooltip="El recurso visual aún no ha sido subido a S3"
                             )
 
-                        # 3. Acciones Compactas
-                        btn_pick = ft.Button(
-                            content="Cargar Archivo",
-                            icon=ft.Icons.ATTACH_FILE,
-                            bgcolor="#F1F5F9",
-                            color=COLOR_PRIMARY,
+                        # 3. Controles de Fila Integrados (Botones en Paralelo)
+                        btn_record_avatar = ft.Button(
+                            content="Grabar Avatar",
+                            icon=ft.Icons.VIDEOCAM,
+                            bgcolor=COLOR_PRIMARY,
+                            color=ft.Colors.WHITE,
                             height=32,
-                            on_click=lambda ev, c=cat_clean, w=word: self.open_file_picker_for_word(c, w)
+                            tooltip=f"Grabar o reemplazar Avatar de Privacidad para '{word.upper()}'",
+                            on_click=lambda ev, c=cat_clean, w=word: self.open_avatar_recorder_modal(c, w)
                         )
-                        btn_upload_res = ft.Button(
-                            content="Subir a S3",
-                            icon=ft.Icons.CLOUD_UPLOAD_OUTLINED,
-                            bgcolor=COLOR_PRIMARY if has_local else "#E2E8F0",
-                            color=ft.Colors.WHITE if has_local else COLOR_TEXT_MUTED,
+
+                        btn_view_local = ft.IconButton(
+                            icon=ft.Icons.VISIBILITY,
+                            icon_color="#0284C7" if has_local else COLOR_TEXT_MUTED,
+                            icon_size=18,
                             disabled=not has_local,
-                            height=32,
+                            tooltip=f"Ver Avatar Local grabado ({filename if has_local else 'No disponible'})",
+                            on_click=lambda ev, c=cat_clean, w=word: self.open_local_media_preview(c, w)
+                        )
+
+                        btn_upload_s3 = ft.IconButton(
+                            icon=ft.Icons.CLOUD_UPLOAD,
+                            icon_color=COLOR_SUCCESS if has_local else COLOR_TEXT_MUTED,
+                            icon_size=18,
+                            disabled=not has_local,
+                            tooltip="Subir a AWS S3 (recursos/{categoria}/{palabra}_avatar.[ext])",
                             on_click=lambda ev, c=cat_clean, w=word: self.upload_word_resource(c, w)
                         )
-                        has_cloud_or_local = (st != "NO_EN_S3" or has_local)
-                        btn_del_res = ft.IconButton(
-                            icon=ft.Icons.DELETE_OUTLINE,
-                            icon_color=COLOR_REC_BTN,
+
+                        btn_delete_s3 = ft.IconButton(
+                            icon=ft.Icons.CLOUD_OFF,
+                            icon_color="#E11D48" if has_cloud else COLOR_TEXT_MUTED,
                             icon_size=18,
-                            disabled=not has_cloud_or_local,
-                            tooltip="Eliminar recurso didáctico de S3 y local",
-                            on_click=lambda ev, c=cat_clean, w=word: self.delete_word_resource(c, w)
+                            disabled=not has_cloud,
+                            tooltip="Eliminar recurso didáctico de AWS S3",
+                            on_click=lambda ev, c=cat_clean, w=word: self.delete_word_resource_s3(c, w)
+                        )
+
+                        btn_delete_local = ft.IconButton(
+                            icon=ft.Icons.DELETE_OUTLINE,
+                            icon_color="#DC2626" if has_local else COLOR_TEXT_MUTED,
+                            icon_size=18,
+                            disabled=not has_local,
+                            tooltip="Eliminar archivo multimedia local de la PC",
+                            on_click=lambda ev, c=cat_clean, w=word: self.delete_word_resource_local(c, w)
+                        )
+
+                        btn_pick = ft.IconButton(
+                            icon=ft.Icons.ATTACH_FILE,
+                            icon_color=COLOR_TEXT_MUTED,
+                            icon_size=18,
+                            tooltip="Cargar archivo multimedia existente desde PC (GIF/PNG/JPG/MP4)",
+                            on_click=lambda ev, c=cat_clean, w=word: self.open_file_picker_for_word(c, w)
                         )
 
                         row_container = ft.Container(
@@ -1623,11 +1684,11 @@ class LSPUIController:
                                             ft.Text(f"{samples_count} muestras", size=10, color=COLOR_TEXT_MUTED)
                                         ], spacing=1)
                                     ], spacing=8),
-                                    width=180
+                                    width=160
                                 ),
-                                ft.Container(content=badge_local, width=180),
-                                ft.Container(content=badge_s3, width=180),
-                                ft.Row([btn_pick, btn_upload_res, btn_del_res], spacing=6, expand=True)
+                                ft.Container(content=badge_local, width=170),
+                                ft.Container(content=badge_s3, width=150),
+                                ft.Row([btn_record_avatar, btn_view_local, btn_upload_s3, btn_delete_s3, btn_delete_local, btn_pick], spacing=4, expand=True)
                             ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                             bgcolor="#FFFFFF",
                             border=ft.Border.all(1, COLOR_BORDER),
@@ -1649,19 +1710,412 @@ class LSPUIController:
 
         threading.Thread(target=_fetch_worker, daemon=True).start()
 
+    def open_avatar_recorder_modal(self, category: str, word: str):
+        """
+        Abre una ventana modal (ft.AlertDialog) con el grabador interactivo en tiempo real del Avatar
+        de Privacidad. Descarta el feed RGB y dibuja el títere vectorial sobre lienzo escolar #F4F8FA.
+        Permite grabar GIFs didácticos o capturar fotos estáticas en PNG.
+        """
+        cat_clean = category.lower().strip()
+        word_clean = word.lower().strip()
+
+        # Detener temporalmente la cámara principal si estaba encendida para evitar bloqueo en Windows
+        was_main_cam_running = bool(self.vision_service and self.vision_service.is_running.is_set())
+        if was_main_cam_running:
+            self.vision_service.stop()
+
+        modal_running = threading.Event()
+        modal_running.set()
+        is_recording = threading.Event()
+        buffer_frames = []
+        last_rendered_frame = [None]
+
+        img_visor = ft.Image(
+            src=EMPTY_PIXEL_DATA,
+            width=480,
+            height=340,
+            fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain",
+            border_radius=8
+        )
+
+        lbl_modal_status = ft.Text("Iniciando cámara y renderizador de Avatar de Privacidad...", size=11, color=COLOR_PRIMARY, weight=ft.FontWeight.W_500)
+        lbl_modal_counter = ft.Text("0 frames grabados", size=11, color=COLOR_TEXT_MUTED)
+        progress_compile = ft.ProgressBar(visible=False, color=COLOR_PRIMARY, height=4)
+
+        btn_start_record = ft.Button(
+            content="Iniciar Grabación",
+            icon=ft.Icons.RADIO_BUTTON_CHECKED,
+            bgcolor="#EF4444",
+            color=ft.Colors.WHITE,
+            height=36
+        )
+
+        btn_stop_record = ft.Button(
+            content="Detener y Guardar GIF",
+            icon=ft.Icons.STOP,
+            bgcolor=COLOR_PRIMARY,
+            color=ft.Colors.WHITE,
+            disabled=True,
+            height=36
+        )
+
+        btn_take_snapshot = ft.Button(
+            content="Tomar Foto PNG",
+            icon=ft.Icons.CAMERA_ALT,
+            bgcolor="#0284C7",
+            color=ft.Colors.WHITE,
+            height=36
+        )
+
+        btn_close_dialog = ft.Button(
+            content="Cerrar",
+            icon=ft.Icons.CLOSE,
+            height=36
+        )
+
+        recorder_dialog = ft.AlertDialog(
+            title=ft.Row([
+                ft.Container(
+                    content=ft.Icon(ft.Icons.VIDEOCAM_ROUNDED, color=COLOR_PRIMARY, size=22),
+                    bgcolor=COLOR_PRIMARY_LIGHT,
+                    border_radius=8,
+                    padding=8
+                ),
+                ft.Column([
+                    ft.Text(f"GRABADOR DE AVATAR: {word.upper()}", size=14, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
+                    ft.Text(f"Categoría: {category.upper()} • Títere Vectorial De-identificado (Lienzo Blanco-Celeste #F4F8FA)", size=10, color=COLOR_TEXT_MUTED)
+                ], spacing=1)
+            ], spacing=10),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Container(
+                        content=img_visor,
+                        width=480,
+                        height=340,
+                        bgcolor="#F4F8FA",
+                        border=ft.Border.all(1, COLOR_BORDER),
+                        border_radius=10,
+                        alignment=ft.Alignment.CENTER
+                    ),
+                    progress_compile,
+                    ft.Row([lbl_modal_status, lbl_modal_counter], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    ft.Row([btn_start_record, btn_stop_record, btn_take_snapshot], spacing=8, alignment=ft.MainAxisAlignment.CENTER)
+                ], spacing=8, tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                width=500
+            ),
+            actions=[btn_close_dialog],
+            actions_alignment=ft.MainAxisAlignment.END,
+            modal=True,
+            open=True
+        )
+
+        def _on_close(e=None):
+            modal_running.clear()
+            is_recording.clear()
+            recorder_dialog.open = False
+            update_ui_safely(recorder_dialog)
+            if hasattr(self.page, "overlay") and recorder_dialog in self.page.overlay:
+                try:
+                    self.page.overlay.remove(recorder_dialog)
+                except Exception:
+                    pass
+            # Restaurar la cámara principal si estaba en marcha antes de abrir el modal
+            if was_main_cam_running:
+                self.vision_service.start()
+
+        def _on_start(e=None):
+            buffer_frames.clear()
+            is_recording.set()
+            btn_start_record.disabled = True
+            btn_stop_record.disabled = False
+            btn_take_snapshot.disabled = True
+            lbl_modal_status.value = "🔴 GRABANDO AVATAR... Realice la seña didáctica frente a la cámara"
+            lbl_modal_status.color = "#EF4444"
+            update_ui_safely(btn_start_record)
+            update_ui_safely(btn_stop_record)
+            update_ui_safely(btn_take_snapshot)
+            update_ui_safely(lbl_modal_status)
+
+        def _on_stop(e=None):
+            is_recording.clear()
+            btn_stop_record.disabled = True
+            lbl_modal_status.value = f"⏳ Compilando animación GIF ({len(buffer_frames)} frames)..."
+            lbl_modal_status.color = COLOR_PRIMARY
+            progress_compile.visible = True
+            update_ui_safely(btn_stop_record)
+            update_ui_safely(lbl_modal_status)
+            update_ui_safely(progress_compile)
+
+            def _save_worker():
+                try:
+                    if not buffer_frames:
+                        raise ValueError("No se registraron frames durante la grabación.")
+                    frames_to_save = list(buffer_frames)
+                    saved_path = self.cloud_service.save_avatar_recording(cat_clean, word_clean, frames_to_save)
+                    filename = os.path.basename(saved_path)
+
+                    def _ui_done():
+                        progress_compile.visible = False
+                        lbl_modal_status.value = f"✅ GIF '{filename}' guardado con éxito ({len(frames_to_save)} frames)."
+                        lbl_modal_status.color = COLOR_SUCCESS
+                        btn_start_record.disabled = False
+                        btn_take_snapshot.disabled = False
+                        update_ui_safely(progress_compile)
+                        update_ui_safely(lbl_modal_status)
+                        update_ui_safely(btn_start_record)
+                        update_ui_safely(btn_take_snapshot)
+                        show_snack_bar(self.page, f"Avatar didáctico '{filename}' guardado para '{word.upper()}'.")
+                        self.refresh_cloud_resources_table(category)
+
+                    if self.page and hasattr(self.page, "run_thread"):
+                        self.page.run_thread(_ui_done)
+                    else:
+                        _ui_done()
+                except Exception as ex:
+                    def _ui_err():
+                        progress_compile.visible = False
+                        lbl_modal_status.value = f"Error al compilar GIF: {ex}"
+                        lbl_modal_status.color = "#EF4444"
+                        btn_start_record.disabled = False
+                        btn_take_snapshot.disabled = False
+                        update_ui_safely(progress_compile)
+                        update_ui_safely(lbl_modal_status)
+                        update_ui_safely(btn_start_record)
+                        update_ui_safely(btn_take_snapshot)
+                        show_snack_bar(self.page, f"Error al guardar GIF: {ex}", is_error=True)
+                    if self.page and hasattr(self.page, "run_thread"):
+                        self.page.run_thread(_ui_err)
+                    else:
+                        _ui_err()
+
+            threading.Thread(target=_save_worker, daemon=True).start()
+
+        def _on_snapshot(e=None):
+            if last_rendered_frame[0] is None:
+                show_snack_bar(self.page, "No hay frame disponible para capturar.", is_error=True)
+                return
+            frame_to_save = last_rendered_frame[0].copy()
+
+            def _snap_worker():
+                try:
+                    saved_path = self.cloud_service.save_avatar_snapshot(cat_clean, word_clean, frame_to_save)
+                    filename = os.path.basename(saved_path)
+
+                    def _ui_snap_done():
+                        lbl_modal_status.value = f"✅ Foto PNG '{filename}' guardada con éxito."
+                        lbl_modal_status.color = COLOR_SUCCESS
+                        update_ui_safely(lbl_modal_status)
+                        show_snack_bar(self.page, f"Foto '{filename}' guardada para '{word.upper()}'.")
+                        self.refresh_cloud_resources_table(category)
+
+                    if self.page and hasattr(self.page, "run_thread"):
+                        self.page.run_thread(_ui_snap_done)
+                    else:
+                        _ui_snap_done()
+                except Exception as ex:
+                    show_snack_bar(self.page, f"Error al guardar foto: {ex}", is_error=True)
+
+            threading.Thread(target=_snap_worker, daemon=True).start()
+
+        btn_start_record.on_click = _on_start
+        btn_stop_record.on_click = _on_stop
+        btn_take_snapshot.on_click = _on_snapshot
+        btn_close_dialog.on_click = _on_close
+
+        def _camera_worker():
+            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                def _ui_no_cam():
+                    lbl_modal_status.value = "⚠️ No se pudo acceder a la cámara web."
+                    lbl_modal_status.color = "#EF4444"
+                    update_ui_safely(lbl_modal_status)
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_no_cam)
+                else:
+                    _ui_no_cam()
+                return
+
+            def _ui_cam_ready():
+                lbl_modal_status.value = "Cámara lista • Títere vectorial activo en tiempo real"
+                lbl_modal_status.color = COLOR_PRIMARY
+                update_ui_safely(lbl_modal_status)
+            if self.page and hasattr(self.page, "run_thread"):
+                self.page.run_thread(_ui_cam_ready)
+            else:
+                _ui_cam_ready()
+
+            while modal_running.is_set():
+                ret, frame = cap.read()
+                if not ret:
+                    time.sleep(0.03)
+                    continue
+
+                frame = cv2.flip(frame, 1)
+                h, w, _ = frame.shape
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                landmarks = None
+                holistic_res = None
+                if hasattr(self.vision_service, "normalizer") and self.vision_service.normalizer:
+                    try:
+                        landmarks = self.vision_service.normalizer.extract_landmarks(frame_rgb)
+                        holistic_res = getattr(self.vision_service.normalizer, 'last_results', None)
+                    except Exception:
+                        landmarks = None
+
+                # Renderizar avatar sobre fondo blanco-celeste escolar #F4F8FA
+                avatar_frame = self.vision_service.render_privacy_avatar(
+                    w, h, landmarks=landmarks, holistic_results=holistic_res
+                )
+                last_rendered_frame[0] = avatar_frame.copy()
+
+                display_frame = avatar_frame.copy()
+                if is_recording.is_set():
+                    buffer_frames.append(avatar_frame.copy())
+                    cnt = len(buffer_frames)
+                    # Distintivo visual de grabación activa en la pantalla del visor
+                    cv2.circle(display_frame, (30, 30), 10, (0, 0, 220), -1)
+                    cv2.putText(display_frame, f"REC {cnt}", (48, 36),
+                                cv2.FONT_HERSHEY_DUPLEX, 0.55, (0, 0, 220), 1, cv2.LINE_AA)
+
+                    def _ui_update_count(c=cnt):
+                        lbl_modal_counter.value = f"{c} frames grabados"
+                        update_ui_safely(lbl_modal_counter)
+                    if self.page and hasattr(self.page, "run_thread"):
+                        self.page.run_thread(_ui_update_count)
+
+                # Codificar a base64 JPEG para el visor de Flet
+                ret_enc, enc_buf = cv2.imencode(".jpg", display_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                if ret_enc:
+                    b64_str = base64.b64encode(enc_buf).decode("utf-8")
+                    def _ui_feed(val=b64_str):
+                        img_visor.src_base64 = val
+                        update_ui_safely(img_visor)
+                    if self.page and hasattr(self.page, "run_thread"):
+                        self.page.run_thread(_ui_feed)
+
+                time.sleep(0.033)
+
+            cap.release()
+
+        threading.Thread(target=_camera_worker, daemon=True).start()
+
+        if hasattr(self.page, "overlay") and self.page.overlay is not None:
+            self.page.overlay.append(recorder_dialog)
+            self.page.update()
+
+    def open_local_media_preview(self, category: str, word: str):
+        """Muestra una ventana modal emergente con el GIF o imagen del avatar grabado localmente."""
+        local_path = self.cloud_service.get_local_resource_path(category, word)
+        if not local_path or not os.path.exists(local_path):
+            show_snack_bar(self.page, f"No existe archivo local para '{word.upper()}'.", is_error=True)
+            return
+
+        try:
+            with open(local_path, "rb") as f:
+                b64_data = base64.b64encode(f.read()).decode("utf-8")
+
+            filename = os.path.basename(local_path)
+            size_kb = os.path.getsize(local_path) / 1024.0
+
+            img_preview = ft.Image(
+                src_base64=b64_data,
+                width=440,
+                height=320,
+                fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain",
+                border_radius=8
+            )
+
+            def _close_preview(e=None):
+                preview_dialog.open = False
+                update_ui_safely(preview_dialog)
+                if hasattr(self.page, "overlay") and preview_dialog in self.page.overlay:
+                    try:
+                        self.page.overlay.remove(preview_dialog)
+                    except Exception:
+                        pass
+
+            preview_dialog = ft.AlertDialog(
+                title=ft.Row([
+                    ft.Container(
+                        content=ft.Icon(ft.Icons.VISIBILITY, color=COLOR_PRIMARY, size=20),
+                        bgcolor=COLOR_PRIMARY_LIGHT,
+                        border_radius=6,
+                        padding=6
+                    ),
+                    ft.Column([
+                        ft.Text(f"VISTA PREVIA LOCAL: {word.upper()}", size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
+                        ft.Text(f"{filename} • {size_kb:.1f} KB", size=10, color=COLOR_TEXT_MUTED)
+                    ], spacing=1)
+                ], spacing=8),
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Container(
+                            content=img_preview,
+                            bgcolor="#F4F8FA",
+                            border=ft.Border.all(1, COLOR_BORDER),
+                            border_radius=8,
+                            padding=6,
+                            alignment=ft.Alignment.CENTER
+                        ),
+                        ft.Text(f"Ruta: {local_path}", size=9, color=COLOR_TEXT_MUTED, selectable=True)
+                    ], spacing=6, tight=True),
+                    width=460
+                ),
+                actions=[
+                    ft.Button("Cerrar", on_click=_close_preview)
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+                modal=True,
+                open=True
+            )
+
+            if hasattr(self.page, "overlay") and self.page.overlay is not None:
+                self.page.overlay.append(preview_dialog)
+                self.page.update()
+        except Exception as ex:
+            show_snack_bar(self.page, f"Error al abrir vista previa: {ex}", is_error=True)
+
     def open_file_picker_for_word(self, category: str, word: str):
         """Abre el explorador de archivos para asociar una guía visual didáctica a la seña."""
         self._picking_target_category = category
         self._picking_target_word = word
-        try:
-            self.file_picker.pick_files(
-                dialog_title=f"Seleccionar Guía Visual para '{word.upper()}' (GIF, PNG, JPG, MP4)",
-                file_type=ft.FilePickerFileType.CUSTOM,
-                allowed_extensions=["gif", "png", "jpg", "jpeg", "mp4"],
-                allow_multiple=False
-            )
-        except Exception as ex:
-            show_snack_bar(self.page, f"Error abriendo explorador de archivos: {ex}", is_error=True)
+
+        def _open_native_picker():
+            picked_path = None
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes('-topmost', True)
+                picked_path = filedialog.askopenfilename(
+                    title=f"Seleccionar Guía Visual para '{word.upper()}' (GIF, PNG, JPG, MP4)",
+                    filetypes=[
+                        ("Archivos Multimedia (*.gif, *.png, *.jpg, *.jpeg, *.mp4)", "*.gif;*.png;*.jpg;*.jpeg;*.mp4"),
+                        ("Imágenes (*.gif, *.png, *.jpg, *.jpeg)", "*.gif;*.png;*.jpg;*.jpeg"),
+                        ("Videos (*.mp4)", "*.mp4"),
+                        ("Todos los archivos", "*.*")
+                    ]
+                )
+                root.destroy()
+            except Exception as ex:
+                print(f"[PICKER] Advertencia diálogo nativo: {ex}")
+
+            if picked_path:
+                class _PickedFile:
+                    def __init__(self, p):
+                        self.path = p
+                        self.name = os.path.basename(p)
+                class _PickerEvent:
+                    def __init__(self, files):
+                        self.files = files
+
+                self.on_file_picker_result(_PickerEvent([_PickedFile(picked_path)]))
+
+        threading.Thread(target=_open_native_picker, daemon=True).start()
 
     def on_file_picker_result(self, e):
         """Manejador asíncrono tras seleccionar un archivo multimedia didáctico."""
@@ -1688,14 +2142,20 @@ class LSPUIController:
         threading.Thread(target=_copy_worker, daemon=True).start()
 
     def upload_word_resource(self, category: str, word: str):
-        """Sube la guía multimedia didáctica de la seña a AWS S3 (recursos/{categoria}/{palabra}.[ext])."""
+        """Sube la guía multimedia didáctica de la seña a AWS S3 (recursos/{categoria}/{palabra}_avatar.[ext])."""
+        # Validación de existencia física previa
+        local_path = self.cloud_service.get_local_resource_path(category, word)
+        if not local_path or not os.path.exists(local_path):
+            show_snack_bar(self.page, f"No existe archivo local para '{word.upper()}'. Graba o carga un avatar primero.", is_error=True)
+            return
+
         def _upload_worker():
             try:
                 def _ui_start():
                     self.cloud_progress_ring.visible = True
                     self.cloud_progress_bar.visible = True
                     self.cloud_progress_bar.value = None
-                    self.lbl_cloud_status.value = f"Subiendo guía didáctica de '{word.upper()}' a AWS S3..."
+                    self.lbl_cloud_status.value = f"Subiendo avatar didáctico de '{word.upper()}' a AWS S3..."
                     update_ui_safely(self.cloud_progress_ring)
                     update_ui_safely(self.cloud_progress_bar)
                     update_ui_safely(self.lbl_cloud_status)
@@ -1706,10 +2166,10 @@ class LSPUIController:
                 self.cloud_service.upload_resource(category, word)
 
                 def _ui_done():
-                    self.lbl_cloud_status.value = f"¡Guía didáctica de '{word.upper()}' sincronizada con éxito en AWS S3!"
+                    self.lbl_cloud_status.value = f"¡Avatar didáctico de '{word.upper()}' sincronizado con éxito en AWS S3!"
                     self.cloud_progress_ring.visible = False
                     self.cloud_progress_bar.value = 1.0
-                    show_snack_bar(self.page, f"Guía didáctica de '{word.upper()}' subida a S3.")
+                    show_snack_bar(self.page, f"Avatar didáctico de '{word.upper()}' subido a S3.")
                     update_ui_safely(self.cloud_progress_ring)
                     update_ui_safely(self.cloud_progress_bar)
                     update_ui_safely(self.lbl_cloud_status)
@@ -1735,15 +2195,72 @@ class LSPUIController:
 
         threading.Thread(target=_upload_worker, daemon=True).start()
 
+    def delete_word_resource_s3(self, category: str, word: str):
+        """Elimina el recurso multimedia didáctico exclusivamente del bucket de AWS S3."""
+        def _delete_s3_worker():
+            try:
+                def _ui_start():
+                    self.cloud_progress_ring.visible = True
+                    self.cloud_progress_bar.visible = True
+                    self.cloud_progress_bar.value = None
+                    self.lbl_cloud_status.value = f"Borrando recurso de '{word.upper()}' en AWS S3..."
+                    update_ui_safely(self.cloud_progress_ring)
+                    update_ui_safely(self.cloud_progress_bar)
+                    update_ui_safely(self.lbl_cloud_status)
+
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_start)
+
+                self.cloud_service.delete_resource_s3(category, word)
+
+                def _ui_done():
+                    self.lbl_cloud_status.value = f"Recurso de '{word.upper()}' eliminado de AWS S3."
+                    self.cloud_progress_ring.visible = False
+                    self.cloud_progress_bar.value = 0.0
+                    show_snack_bar(self.page, f"Recurso de '{word.upper()}' eliminado de S3.")
+                    update_ui_safely(self.cloud_progress_ring)
+                    update_ui_safely(self.cloud_progress_bar)
+                    update_ui_safely(self.lbl_cloud_status)
+                    self.refresh_cloud_resources_table(category)
+
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_done)
+                else:
+                    _ui_done()
+            except Exception as ex:
+                def _ui_err():
+                    self.cloud_progress_ring.visible = False
+                    self.cloud_progress_bar.visible = False
+                    self.lbl_cloud_status.value = f"Error al eliminar de S3: {str(ex)}"
+                    show_snack_bar(self.page, f"Error al eliminar de S3: {str(ex)}", is_error=True)
+                    update_ui_safely(self.cloud_progress_ring)
+                    update_ui_safely(self.cloud_progress_bar)
+                    update_ui_safely(self.lbl_cloud_status)
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_err)
+                else:
+                    _ui_err()
+
+        threading.Thread(target=_delete_s3_worker, daemon=True).start()
+
+    def delete_word_resource_local(self, category: str, word: str):
+        """Elimina el archivo multimedia del avatar guardado en el disco local de la PC."""
+        try:
+            self.cloud_service.delete_resource_local(category, word)
+            show_snack_bar(self.page, f"Archivo local de '{word.upper()}' eliminado de la PC.")
+            self.refresh_cloud_resources_table(category)
+        except Exception as ex:
+            show_snack_bar(self.page, f"Error al eliminar archivo local: {ex}", is_error=True)
+
     def delete_word_resource(self, category: str, word: str):
-        """Elimina la guía multimedia didáctica de AWS S3 y del directorio local."""
+        """Elimina la guía multimedia didáctica de AWS S3 y del directorio local (compatibilidad)."""
         def _delete_worker():
             try:
                 def _ui_start():
                     self.cloud_progress_ring.visible = True
                     self.cloud_progress_bar.visible = True
                     self.cloud_progress_bar.value = None
-                    self.lbl_cloud_status.value = f"Eliminando guía didáctica de '{word.upper()}' de S3 y local..."
+                    self.lbl_cloud_status.value = f"Eliminando recurso didáctico de '{word.upper()}' de S3 y local..."
                     update_ui_safely(self.cloud_progress_ring)
                     update_ui_safely(self.cloud_progress_bar)
                     update_ui_safely(self.lbl_cloud_status)
@@ -1754,10 +2271,10 @@ class LSPUIController:
                 self.cloud_service.delete_resource(category, word, delete_local=True)
 
                 def _ui_done():
-                    self.lbl_cloud_status.value = f"Guía didáctica de '{word.upper()}' eliminada de S3 y local."
+                    self.lbl_cloud_status.value = f"Recurso didáctico de '{word.upper()}' eliminado de S3 y local."
                     self.cloud_progress_ring.visible = False
                     self.cloud_progress_bar.value = 0.0
-                    show_snack_bar(self.page, f"Guía de '{word.upper()}' eliminada.")
+                    show_snack_bar(self.page, f"Recurso de '{word.upper()}' eliminado.")
                     update_ui_safely(self.cloud_progress_ring)
                     update_ui_safely(self.cloud_progress_bar)
                     update_ui_safely(self.lbl_cloud_status)
@@ -1772,7 +2289,7 @@ class LSPUIController:
                     self.cloud_progress_ring.visible = False
                     self.cloud_progress_bar.visible = False
                     self.lbl_cloud_status.value = f"Error al eliminar guía: {str(ex)}"
-                    show_snack_bar(self.page, f"Error al eliminar de S3: {str(ex)}", is_error=True)
+                    show_snack_bar(self.page, f"Error al eliminar: {str(ex)}", is_error=True)
                     update_ui_safely(self.cloud_progress_ring)
                     update_ui_safely(self.cloud_progress_bar)
                     update_ui_safely(self.lbl_cloud_status)
@@ -2518,10 +3035,10 @@ def build_cloud_view(controller: LSPUIController) -> ft.Container:
     # 3. Sección: Gestión de Recursos Didácticos (Guías de Señas)
     table_header = ft.Container(
         content=ft.Row([
-            ft.Container(ft.Text("PALABRA / SEÑA", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=180),
-            ft.Container(ft.Text("GUÍA LOCAL (DIDÁCTICA)", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=180),
-            ft.Container(ft.Text("ESTADO EN AWS S3", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=180),
-            ft.Container(ft.Text("ACCIONES DE GESTIÓN MULTIMEDIA", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), expand=True)
+            ft.Container(ft.Text("PALABRA / SEÑA", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=160),
+            ft.Container(ft.Text("ESTADO LOCAL", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=170),
+            ft.Container(ft.Text("ESTADO EN AWS S3", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=150),
+            ft.Container(ft.Text("ACCIONES MULTIMEDIA Y NUBE", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), expand=True)
         ], alignment=ft.MainAxisAlignment.START),
         padding=ft.Padding(12, 6, 12, 6),
         bgcolor="#F8FAFC",
@@ -2535,7 +3052,7 @@ def build_cloud_view(controller: LSPUIController) -> ft.Container:
                     ft.Icon(ft.Icons.VIDEO_LIBRARY_OUTLINED, color=COLOR_PRIMARY, size=18),
                     ft.Text("2. Gestión de Recursos Didácticos (Guías de Señas)", size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
                 ], spacing=6),
-                ft.Text("S3: recursos/{categoria}/{palabra}.[ext]", size=11, color=COLOR_TEXT_MUTED)
+                ft.Text("S3: recursos/{categoria}/{palabra}_avatar.[ext]", size=11, color=COLOR_TEXT_MUTED)
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             table_header,
             ft.Container(

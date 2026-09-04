@@ -62,6 +62,10 @@ def main(page: ft.Page):
     ui_controller = LSPUIController(page, db_manager, vision_service, trainer, tester_service)
     tabs = build_main_app_tabs(ui_controller)
 
+    # Registrar selector de archivos en el overlay de la página
+    if hasattr(page, "overlay") and ui_controller.file_picker not in page.overlay:
+        page.overlay.append(ui_controller.file_picker)
+
     # =========================================================================
     # COMPONENTES SUPERIORES DEL SISTEMA STITCH (principal.png / test.png)
     # =========================================================================

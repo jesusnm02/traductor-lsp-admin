@@ -105,12 +105,22 @@ class LSPUIController:
         self.btn_mode_cloud = None
         self.test_model_banner = None
 
-        # Controles y estado de Sincronización en la Nube (AWS S3)
+        # Controles y estado de Sincronización en la Nube (AWS S3) y Recursos Didácticos
         self.cloud_categories_listview = ft.ListView(expand=True, spacing=6, padding=4)
+        self.cloud_resources_listview = ft.ListView(expand=True, spacing=6, padding=4)
+        self.cloud_model_card_container = ft.Container(padding=ft.Padding(10, 6, 10, 6))
+        self.current_cloud_category = None
         self.cloud_progress_bar = ft.ProgressBar(value=0.0, color=COLOR_PRIMARY, bgcolor="#E2E8F0", height=6, border_radius=3, visible=False)
-        self.lbl_cloud_status = ft.Text("Consola de Transferencia: Listo para sincronizar modelos con AWS S3.", size=12, weight=ft.FontWeight.W_500, color=COLOR_TEXT_TITLE, expand=True)
+        self.lbl_cloud_status = ft.Text("Consola de Transferencia: Listo para sincronizar modelos y guías didácticas con AWS S3.", size=12, weight=ft.FontWeight.W_500, color=COLOR_TEXT_TITLE, expand=True)
         self.cloud_progress_ring = ft.ProgressRing(width=16, height=16, stroke_width=2, color=COLOR_PRIMARY, visible=False)
         self.cloud_statuses = {}
+
+        # FilePicker para asociación de recursos didácticos
+        self.file_picker = ft.FilePicker(on_result=self.on_file_picker_result)
+        self._picking_target_category = None
+        self._picking_target_word = None
+        if hasattr(self.page, "overlay") and self.page.overlay is not None:
+            self.page.overlay.append(self.file_picker)
 
         # Estados de la UI
         self.selected_category = None
@@ -280,6 +290,31 @@ class LSPUIController:
             padding=ft.Padding(6, 3, 6, 3),
             bgcolor="#F1F5F9",
             border_radius=6
+        )
+
+        # 5b. Modo Avatar de Privacidad (De-identificar Docente)
+        self.switch_avatar = ft.Switch(
+            label="Modo Avatar de Privacidad (De-identificar Docente)",
+            value=False,
+            active_color=COLOR_PRIMARY,
+            label_text_style=ft.TextStyle(color=COLOR_TEXT_TITLE, weight=ft.FontWeight.W_600, size=11),
+            on_change=self.toggle_privacy_avatar,
+            tooltip="Descarta el video real y proyecta un títere vectorial escolar para proteger la identidad biométrica"
+        )
+
+        # 5c. Selector de Categoría para Tab 3 (Nube AWS)
+        self.cloud_category_dropdown = ft.Dropdown(
+            hint_text="Categoría activa en S3...",
+            text_size=12,
+            bgcolor="#FFFFFF",
+            border_color=COLOR_BORDER,
+            focused_border_color=COLOR_PRIMARY,
+            color=COLOR_TEXT_TITLE,
+            height=38,
+            width=240,
+            border_radius=8,
+            content_padding=ft.Padding(10, 0, 10, 0),
+            on_select=lambda e: self.on_cloud_category_changed(e.control.value)
         )
 
         # 6. Botones de Acción (Pestaña 1)
@@ -533,6 +568,15 @@ class LSPUIController:
         
         update_ui_safely(self.voice_badge)
         update_ui_safely(self.switch_voice)
+
+    def toggle_privacy_avatar(self, e):
+        val = bool(self.switch_avatar.value)
+        self.vision_service.set_privacy_avatar_mode(val)
+        if val:
+            show_snack_bar(self.page, "Modo Avatar de Privacidad ACTIVADO: El video real se descarta.")
+        else:
+            show_snack_bar(self.page, "Modo Avatar DESACTIVADO: Vista de cámara real restaurada.")
+        update_ui_safely(self.switch_avatar)
 
     def on_voice_status_update(self, msg: str):
         self.status_text.value = msg
@@ -1296,8 +1340,449 @@ class LSPUIController:
 
     # --- MÓDULO DE SINCRONIZACIÓN CLOUD (AWS S3 & TENSORFLOW.JS) ---
 
+    # --- MÓDULO DE SINCRONIZACIÓN CLOUD Y GESTIÓN MULTIMEDIA (AWS S3) ---
+
+    def on_cloud_category_changed(self, category_name: str):
+        """Manejador de selección en el dropdown de categorías de la pestaña Nube."""
+        if not category_name:
+            return
+        self.current_cloud_category = category_name.lower().strip()
+        self.render_cloud_model_card(self.current_cloud_category)
+        self.refresh_cloud_resources_table(self.current_cloud_category)
+
+    def render_cloud_model_card(self, category_name: str):
+        """Renderiza la tarjeta del modelo predictivo TensorFlow.js de la categoría activa."""
+        cat = category_name.lower().strip()
+        st = self.cloud_statuses.get(cat, self.cloud_service.check_cloud_status(cat))
+        has_local = self.cloud_service.verify_local_model(cat)
+
+        # 1. Badge Local (.keras)
+        if has_local:
+            local_badge = ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.CHECK_CIRCLE, size=14, color=COLOR_SUCCESS),
+                    ft.Text("Entrenado (.keras)", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.W_600)
+                ], spacing=4),
+                bgcolor="#DCFCE7",
+                border_radius=6,
+                padding=ft.Padding(8, 4, 8, 4)
+            )
+        else:
+            local_badge = ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.CANCEL_OUTLINED, size=14, color=COLOR_REC_BTN),
+                    ft.Text("Sin Modelo Local", size=11, color=COLOR_REC_BTN, weight=ft.FontWeight.W_600)
+                ], spacing=4),
+                bgcolor="#FEE2E2",
+                border_radius=6,
+                padding=ft.Padding(8, 4, 8, 4)
+            )
+
+        # 2. Badge AWS S3 (TF.js)
+        if st == "PUBLICADO":
+            cloud_badge = ft.Container(
+                content=ft.Row([
+                    ft.Text("🚀", size=12),
+                    ft.Text("Sincronizado en S3", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.BOLD)
+                ], spacing=4),
+                bgcolor="#E8F5E9",
+                border_radius=6,
+                padding=ft.Padding(8, 4, 8, 4)
+            )
+            sync_btn_text = "Actualizar en S3"
+            sync_btn_bg = "#F1F5F9"
+            sync_btn_fg = COLOR_PRIMARY
+            delete_disabled = False
+        elif st == "DESACTUALIZADO":
+            cloud_badge = ft.Container(
+                content=ft.Row([
+                    ft.Text("⚠️", size=12),
+                    ft.Text("Desactualizado en S3", size=11, color="#E65100", weight=ft.FontWeight.BOLD)
+                ], spacing=4),
+                bgcolor="#FFF3E0",
+                border_radius=6,
+                padding=ft.Padding(8, 4, 8, 4)
+            )
+            sync_btn_text = "Re-sincronizar"
+            sync_btn_bg = COLOR_PRIMARY
+            sync_btn_fg = ft.Colors.WHITE
+            delete_disabled = False
+        elif st == "SIN_MODELO_LOCAL":
+            cloud_badge = ft.Container(
+                content=ft.Row([
+                    ft.Text("☁️", size=12),
+                    ft.Text("Solo en S3", size=11, color=COLOR_TEXT_MUTED, weight=ft.FontWeight.W_600)
+                ], spacing=4),
+                bgcolor="#ECEFF1",
+                border_radius=6,
+                padding=ft.Padding(8, 4, 8, 4)
+            )
+            sync_btn_text = "Subir a S3"
+            sync_btn_bg = "#E2E8F0"
+            sync_btn_fg = COLOR_TEXT_MUTED
+            delete_disabled = False
+        elif st == "ERROR_CONEXION":
+            cloud_badge = ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.WIFI_OFF, size=14, color=COLOR_REC_BTN),
+                    ft.Text("Error Conexión", size=11, color=COLOR_REC_BTN, weight=ft.FontWeight.BOLD)
+                ], spacing=4),
+                bgcolor="#FEE2E2",
+                border_radius=6,
+                padding=ft.Padding(8, 4, 8, 4)
+            )
+            sync_btn_text = "Reintentar"
+            sync_btn_bg = COLOR_PRIMARY
+            sync_btn_fg = ft.Colors.WHITE
+            delete_disabled = True
+        else:  # NO_SUBIDO
+            cloud_badge = ft.Container(
+                content=ft.Row([
+                    ft.Text("☁️", size=12),
+                    ft.Text("No Publicado", size=11, color="#455A64", weight=ft.FontWeight.BOLD)
+                ], spacing=4),
+                bgcolor="#ECEFF1",
+                border_radius=6,
+                padding=ft.Padding(8, 4, 8, 4)
+            )
+            sync_btn_text = "Compilar y Subir a S3"
+            sync_btn_bg = COLOR_PRIMARY
+            sync_btn_fg = ft.Colors.WHITE
+            delete_disabled = True
+
+        btn_upload = ft.Button(
+            content=sync_btn_text,
+            icon=ft.Icons.CLOUD_UPLOAD_OUTLINED,
+            bgcolor=sync_btn_bg,
+            color=sync_btn_fg,
+            disabled=not has_local,
+            on_click=lambda ev, c=cat: self.sync_category_to_cloud(c),
+            height=36
+        )
+
+        btn_del_cloud = ft.IconButton(
+            icon=ft.Icons.DELETE_OUTLINE,
+            icon_color=COLOR_REC_BTN,
+            icon_size=18,
+            disabled=delete_disabled,
+            tooltip="Eliminar modelo TensorFlow.js de AWS S3",
+            on_click=lambda ev, c=cat: self.delete_category_from_cloud(c)
+        )
+
+        card_content = ft.Row([
+            ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.AUTO_AWESOME, color=COLOR_PRIMARY, size=20),
+                    ft.Column([
+                        ft.Text(f"CATEGORÍA: {cat.upper()}", size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
+                        ft.Text(f"modelos/{cat}/tfjs_model/ (model.json + shard*.bin)", size=10, color=COLOR_TEXT_MUTED)
+                    ], spacing=1)
+                ], spacing=8),
+                width=260
+            ),
+            ft.Container(content=local_badge, width=170),
+            ft.Container(content=cloud_badge, width=190),
+            ft.Row([btn_upload, btn_del_cloud], spacing=6, expand=True)
+        ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+        self.cloud_model_card_container.content = card_content
+        update_ui_safely(self.cloud_model_card_container)
+
+    def refresh_cloud_resources_table(self, category_name: str):
+        """
+        Consulta de forma asíncrona todos los recursos didácticos de la categoría en S3 y local,
+        poblando interactivamente la lista de señas.
+        """
+        def _fetch_worker():
+            try:
+                cat_clean = category_name.lower().strip()
+                words = list(self.data_manager.get_words_in_category(cat_clean))
+                cloud_resources = self.cloud_service.list_cloud_resources_for_category(cat_clean)
+                all_words = sorted(list(set(words).union(set(cloud_resources.keys()))))
+
+                rows = []
+                if not all_words:
+                    rows.append(
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Icon(ft.Icons.VIDEO_LIBRARY_OUTLINED, size=32, color=COLOR_TEXT_MUTED),
+                                ft.Text(f"No hay señas registradas en la categoría '{cat_clean.upper()}'.", color=COLOR_TEXT_MUTED, size=12)
+                            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                            height=140,
+                            alignment=ft.Alignment.CENTER
+                        )
+                    )
+                else:
+                    for word in all_words:
+                        # Muestras locales
+                        word_dir = self.data_manager._get_word_dir(cat_clean, word)
+                        samples_count = 0
+                        if os.path.exists(word_dir):
+                            samples_count = len([f for f in os.listdir(word_dir) if f.endswith('.csv')])
+
+                        # Estado del recurso multimedia didáctico
+                        res_status = self.cloud_service.check_resource_status(cat_clean, word, cloud_resources)
+                        st = res_status["status"]
+                        local_path = res_status["local_path"]
+                        has_local = (local_path is not None)
+
+                        # 1. Miniatura / Estado Local
+                        if has_local:
+                            filename = os.path.basename(local_path)
+                            badge_local = ft.Container(
+                                content=ft.Row([
+                                    ft.Icon(ft.Icons.IMAGE, size=15, color=COLOR_SUCCESS),
+                                    ft.Text(filename, size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.W_600)
+                                ], spacing=4),
+                                bgcolor="#DCFCE7",
+                                border_radius=6,
+                                padding=ft.Padding(8, 4, 8, 4),
+                                tooltip=f"Archivo local: {local_path}"
+                            )
+                        else:
+                            badge_local = ft.Container(
+                                content=ft.Row([
+                                    ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED_OUTLINED, size=15, color=COLOR_TEXT_MUTED),
+                                    ft.Text("Sin guía local", size=11, color=COLOR_TEXT_MUTED)
+                                ], spacing=4),
+                                bgcolor="#F1F5F9",
+                                border_radius=6,
+                                padding=ft.Padding(8, 4, 8, 4)
+                            )
+
+                        # 2. Estado en S3
+                        if st == "SINCRONIZADO":
+                            badge_s3 = ft.Container(
+                                content=ft.Row([
+                                    ft.Text("🚀", size=12),
+                                    ft.Text("Sincronizado", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.BOLD)
+                                ], spacing=4),
+                                bgcolor="#E8F5E9",
+                                border_radius=6,
+                                padding=ft.Padding(8, 4, 8, 4)
+                            )
+                        elif st == "PENDIENTE":
+                            badge_s3 = ft.Container(
+                                content=ft.Row([
+                                    ft.Text("⚠️", size=12),
+                                    ft.Text("Pendiente", size=11, color="#E65100", weight=ft.FontWeight.BOLD)
+                                ], spacing=4),
+                                bgcolor="#FFF3E0",
+                                border_radius=6,
+                                padding=ft.Padding(8, 4, 8, 4),
+                                tooltip="El archivo local fue modificado o aún no se ha subido a S3"
+                            )
+                        else:  # NO_EN_S3
+                            badge_s3 = ft.Container(
+                                content=ft.Row([
+                                    ft.Text("☁️", size=12),
+                                    ft.Text("No en S3", size=11, color="#455A64", weight=ft.FontWeight.BOLD)
+                                ], spacing=4),
+                                bgcolor="#ECEFF1",
+                                border_radius=6,
+                                padding=ft.Padding(8, 4, 8, 4)
+                            )
+
+                        # 3. Acciones Compactas
+                        btn_pick = ft.Button(
+                            content="Cargar Archivo",
+                            icon=ft.Icons.ATTACH_FILE,
+                            bgcolor="#F1F5F9",
+                            color=COLOR_PRIMARY,
+                            height=32,
+                            on_click=lambda ev, c=cat_clean, w=word: self.open_file_picker_for_word(c, w)
+                        )
+                        btn_upload_res = ft.Button(
+                            content="Subir a S3",
+                            icon=ft.Icons.CLOUD_UPLOAD_OUTLINED,
+                            bgcolor=COLOR_PRIMARY if has_local else "#E2E8F0",
+                            color=ft.Colors.WHITE if has_local else COLOR_TEXT_MUTED,
+                            disabled=not has_local,
+                            height=32,
+                            on_click=lambda ev, c=cat_clean, w=word: self.upload_word_resource(c, w)
+                        )
+                        has_cloud_or_local = (st != "NO_EN_S3" or has_local)
+                        btn_del_res = ft.IconButton(
+                            icon=ft.Icons.DELETE_OUTLINE,
+                            icon_color=COLOR_REC_BTN,
+                            icon_size=18,
+                            disabled=not has_cloud_or_local,
+                            tooltip="Eliminar recurso didáctico de S3 y local",
+                            on_click=lambda ev, c=cat_clean, w=word: self.delete_word_resource(c, w)
+                        )
+
+                        row_container = ft.Container(
+                            content=ft.Row([
+                                ft.Container(
+                                    content=ft.Row([
+                                        ft.Icon(ft.Icons.TRANSLATE, color=COLOR_PRIMARY, size=16),
+                                        ft.Column([
+                                            ft.Text(word.upper(), size=12, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
+                                            ft.Text(f"{samples_count} muestras", size=10, color=COLOR_TEXT_MUTED)
+                                        ], spacing=1)
+                                    ], spacing=8),
+                                    width=180
+                                ),
+                                ft.Container(content=badge_local, width=180),
+                                ft.Container(content=badge_s3, width=180),
+                                ft.Row([btn_pick, btn_upload_res, btn_del_res], spacing=6, expand=True)
+                            ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                            bgcolor="#FFFFFF",
+                            border=ft.Border.all(1, COLOR_BORDER),
+                            border_radius=8,
+                            padding=ft.Padding(12, 6, 12, 6)
+                        )
+                        rows.append(row_container)
+
+                def _update_ui():
+                    self.cloud_resources_listview.controls = rows
+                    update_ui_safely(self.cloud_resources_listview)
+
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_update_ui)
+                else:
+                    _update_ui()
+            except Exception as ex:
+                print(f"[CLOUD] Error cargando recursos didácticos: {ex}")
+
+        threading.Thread(target=_fetch_worker, daemon=True).start()
+
+    def open_file_picker_for_word(self, category: str, word: str):
+        """Abre el explorador de archivos para asociar una guía visual didáctica a la seña."""
+        self._picking_target_category = category
+        self._picking_target_word = word
+        try:
+            self.file_picker.pick_files(
+                dialog_title=f"Seleccionar Guía Visual para '{word.upper()}' (GIF, PNG, JPG, MP4)",
+                file_type=ft.FilePickerFileType.CUSTOM,
+                allowed_extensions=["gif", "png", "jpg", "jpeg", "mp4"],
+                allow_multiple=False
+            )
+        except Exception as ex:
+            show_snack_bar(self.page, f"Error abriendo explorador de archivos: {ex}", is_error=True)
+
+    def on_file_picker_result(self, e):
+        """Manejador asíncrono tras seleccionar un archivo multimedia didáctico."""
+        if not e.files or len(e.files) == 0:
+            return
+        cat = getattr(self, "_picking_target_category", None)
+        word = getattr(self, "_picking_target_word", None)
+        if not cat or not word:
+            return
+        picked_file = e.files[0]
+        picked_path = picked_file.path
+        if not picked_path:
+            return
+
+        def _copy_worker():
+            try:
+                saved_path = self.cloud_service.save_local_resource(cat, word, picked_path)
+                filename = os.path.basename(saved_path)
+                show_snack_bar(self.page, f"Guía didáctica '{filename}' guardada para '{word.upper()}'.")
+                self.refresh_cloud_resources_table(cat)
+            except Exception as ex:
+                show_snack_bar(self.page, f"Error al asociar archivo: {str(ex)}", is_error=True)
+
+        threading.Thread(target=_copy_worker, daemon=True).start()
+
+    def upload_word_resource(self, category: str, word: str):
+        """Sube la guía multimedia didáctica de la seña a AWS S3 (recursos/{categoria}/{palabra}.[ext])."""
+        def _upload_worker():
+            try:
+                def _ui_start():
+                    self.cloud_progress_ring.visible = True
+                    self.cloud_progress_bar.visible = True
+                    self.cloud_progress_bar.value = None
+                    self.lbl_cloud_status.value = f"Subiendo guía didáctica de '{word.upper()}' a AWS S3..."
+                    update_ui_safely(self.cloud_progress_ring)
+                    update_ui_safely(self.cloud_progress_bar)
+                    update_ui_safely(self.lbl_cloud_status)
+
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_start)
+
+                self.cloud_service.upload_resource(category, word)
+
+                def _ui_done():
+                    self.lbl_cloud_status.value = f"¡Guía didáctica de '{word.upper()}' sincronizada con éxito en AWS S3!"
+                    self.cloud_progress_ring.visible = False
+                    self.cloud_progress_bar.value = 1.0
+                    show_snack_bar(self.page, f"Guía didáctica de '{word.upper()}' subida a S3.")
+                    update_ui_safely(self.cloud_progress_ring)
+                    update_ui_safely(self.cloud_progress_bar)
+                    update_ui_safely(self.lbl_cloud_status)
+                    self.refresh_cloud_resources_table(category)
+
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_done)
+                else:
+                    _ui_done()
+            except Exception as ex:
+                def _ui_err():
+                    self.cloud_progress_ring.visible = False
+                    self.cloud_progress_bar.visible = False
+                    self.lbl_cloud_status.value = f"Error al subir guía de '{word.upper()}': {str(ex)}"
+                    show_snack_bar(self.page, f"Error al subir a S3: {str(ex)}", is_error=True)
+                    update_ui_safely(self.cloud_progress_ring)
+                    update_ui_safely(self.cloud_progress_bar)
+                    update_ui_safely(self.lbl_cloud_status)
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_err)
+                else:
+                    _ui_err()
+
+        threading.Thread(target=_upload_worker, daemon=True).start()
+
+    def delete_word_resource(self, category: str, word: str):
+        """Elimina la guía multimedia didáctica de AWS S3 y del directorio local."""
+        def _delete_worker():
+            try:
+                def _ui_start():
+                    self.cloud_progress_ring.visible = True
+                    self.cloud_progress_bar.visible = True
+                    self.cloud_progress_bar.value = None
+                    self.lbl_cloud_status.value = f"Eliminando guía didáctica de '{word.upper()}' de S3 y local..."
+                    update_ui_safely(self.cloud_progress_ring)
+                    update_ui_safely(self.cloud_progress_bar)
+                    update_ui_safely(self.lbl_cloud_status)
+
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_start)
+
+                self.cloud_service.delete_resource(category, word, delete_local=True)
+
+                def _ui_done():
+                    self.lbl_cloud_status.value = f"Guía didáctica de '{word.upper()}' eliminada de S3 y local."
+                    self.cloud_progress_ring.visible = False
+                    self.cloud_progress_bar.value = 0.0
+                    show_snack_bar(self.page, f"Guía de '{word.upper()}' eliminada.")
+                    update_ui_safely(self.cloud_progress_ring)
+                    update_ui_safely(self.cloud_progress_bar)
+                    update_ui_safely(self.lbl_cloud_status)
+                    self.refresh_cloud_resources_table(category)
+
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_done)
+                else:
+                    _ui_done()
+            except Exception as ex:
+                def _ui_err():
+                    self.cloud_progress_ring.visible = False
+                    self.cloud_progress_bar.visible = False
+                    self.lbl_cloud_status.value = f"Error al eliminar guía: {str(ex)}"
+                    show_snack_bar(self.page, f"Error al eliminar de S3: {str(ex)}", is_error=True)
+                    update_ui_safely(self.cloud_progress_ring)
+                    update_ui_safely(self.cloud_progress_bar)
+                    update_ui_safely(self.lbl_cloud_status)
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_err)
+                else:
+                    _ui_err()
+
+        threading.Thread(target=_delete_worker, daemon=True).start()
+
     def refresh_cloud_table(self, e=None):
-        """Escanea las categorías locales y de AWS S3 y actualiza los badges de sincronización."""
+        """Escanea las categorías locales y de AWS S3, actualizando selector, modelo TF.js y recursos didácticos."""
         def _async_refresh():
             try:
                 def _ui_start():
@@ -1324,165 +1809,44 @@ class LSPUIController:
 
                 self.cloud_statuses = statuses
 
-                def _ui_populate():
-                    self.cloud_categories_listview.controls.clear()
-                    if not all_cats:
-                        self.cloud_categories_listview.controls.append(
-                            ft.Container(
-                                content=ft.Column([
-                                    ft.Icon(ft.Icons.CLOUD_OFF, size=36, color=COLOR_TEXT_MUTED),
-                                    ft.Text("No hay categorías creadas ni en local ni en la nube.", color=COLOR_TEXT_MUTED, size=12)
-                                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                                height=180,
-                                alignment=ft.Alignment.CENTER
-                            )
-                        )
+                current = getattr(self, "current_cloud_category", None)
+                if not current or current not in all_cats:
+                    if self.selected_category and self.selected_category in all_cats:
+                        current = self.selected_category
+                    elif all_cats:
+                        current = all_cats[0]
                     else:
-                        for cat in all_cats:
-                            st = statuses.get(cat, "NO_SUBIDO")
-                            has_local = self.cloud_service.verify_local_model(cat)
+                        current = None
+                self.current_cloud_category = current
 
-                            # 1. Badge de Estado Local
-                            if has_local:
-                                local_badge = ft.Container(
-                                    content=ft.Row([
-                                        ft.Icon(ft.Icons.CHECK_CIRCLE, size=14, color=COLOR_SUCCESS),
-                                        ft.Text("Entrenado (.keras)", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.W_600)
-                                    ], spacing=4),
-                                    bgcolor="#DCFCE7",
-                                    border_radius=6,
-                                    padding=ft.Padding(8, 4, 8, 4)
-                                )
-                            else:
-                                local_badge = ft.Container(
-                                    content=ft.Row([
-                                        ft.Icon(ft.Icons.CANCEL_OUTLINED, size=14, color=COLOR_REC_BTN),
-                                        ft.Text("Sin Modelo Local", size=11, color=COLOR_REC_BTN, weight=ft.FontWeight.W_600)
-                                    ], spacing=4),
-                                    bgcolor="#FEE2E2",
-                                    border_radius=6,
-                                    padding=ft.Padding(8, 4, 8, 4)
-                                )
+                def _ui_populate():
+                    self.cloud_category_dropdown.options = [
+                        ft.dropdown.Option(c.upper(), key=c) for c in all_cats
+                    ]
+                    self.cloud_category_dropdown.value = current
+                    update_ui_safely(self.cloud_category_dropdown)
 
-                            # 2. Badge de Estado en AWS S3
-                            if st == "PUBLICADO":
-                                cloud_badge = ft.Container(
-                                    content=ft.Row([
-                                        ft.Text("🚀", size=12),
-                                        ft.Text("Sincronizado", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.BOLD)
-                                    ], spacing=4),
-                                    bgcolor="#E8F5E9",
-                                    border_radius=6,
-                                    padding=ft.Padding(8, 4, 8, 4)
-                                )
-                                sync_btn_text = "Actualizar en S3"
-                                sync_btn_bg = "#F1F5F9"
-                                sync_btn_fg = COLOR_PRIMARY
-                                delete_disabled = False
-                            elif st == "DESACTUALIZADO":
-                                cloud_badge = ft.Container(
-                                    content=ft.Row([
-                                        ft.Text("⚠️", size=12),
-                                        ft.Text("Desactualizado", size=11, color="#E65100", weight=ft.FontWeight.BOLD)
-                                    ], spacing=4),
-                                    bgcolor="#FFF3E0",
-                                    border_radius=6,
-                                    padding=ft.Padding(8, 4, 8, 4)
-                                )
-                                sync_btn_text = "Re-sincronizar"
-                                sync_btn_bg = COLOR_PRIMARY
-                                sync_btn_fg = ft.Colors.WHITE
-                                delete_disabled = False
-                            elif st == "SIN_MODELO_LOCAL":
-                                cloud_badge = ft.Container(
-                                    content=ft.Row([
-                                        ft.Text("☁️", size=12),
-                                        ft.Text("Solo en la Nube" if cat in cloud_cats else "Sin Modelo", size=11, color=COLOR_TEXT_MUTED, weight=ft.FontWeight.W_600)
-                                    ], spacing=4),
-                                    bgcolor="#ECEFF1",
-                                    border_radius=6,
-                                    padding=ft.Padding(8, 4, 8, 4)
-                                )
-                                sync_btn_text = "Subir a S3"
-                                sync_btn_bg = "#E2E8F0"
-                                sync_btn_fg = COLOR_TEXT_MUTED
-                                delete_disabled = (cat not in cloud_cats)
-                            elif st == "ERROR_CONEXION":
-                                cloud_badge = ft.Container(
-                                    content=ft.Row([
-                                        ft.Icon(ft.Icons.WIFI_OFF, size=14, color=COLOR_REC_BTN),
-                                        ft.Text("Error Conexión", size=11, color=COLOR_REC_BTN, weight=ft.FontWeight.BOLD)
-                                    ], spacing=4),
-                                    bgcolor="#FEE2E2",
-                                    border_radius=6,
-                                    padding=ft.Padding(8, 4, 8, 4)
-                                )
-                                sync_btn_text = "Reintentar"
-                                sync_btn_bg = COLOR_PRIMARY
-                                sync_btn_fg = ft.Colors.WHITE
-                                delete_disabled = True
-                            else:  # NO_SUBIDO
-                                cloud_badge = ft.Container(
-                                    content=ft.Row([
-                                        ft.Text("☁️", size=12),
-                                        ft.Text("No Publicado", size=11, color="#455A64", weight=ft.FontWeight.BOLD)
-                                    ], spacing=4),
-                                    bgcolor="#ECEFF1",
-                                    border_radius=6,
-                                    padding=ft.Padding(8, 4, 8, 4)
-                                )
-                                sync_btn_text = "Subir a S3"
-                                sync_btn_bg = COLOR_PRIMARY
-                                sync_btn_fg = ft.Colors.WHITE
-                                delete_disabled = True
-
-                            btn_upload = ft.Button(
-                                content=sync_btn_text,
-                                icon=ft.Icons.CLOUD_UPLOAD_OUTLINED,
-                                bgcolor=sync_btn_bg,
-                                color=sync_btn_fg,
-                                disabled=not has_local,
-                                on_click=lambda ev, c=cat: self.sync_category_to_cloud(c),
-                                height=36
-                            )
-
-                            btn_del_cloud = ft.IconButton(
-                                icon=ft.Icons.DELETE_OUTLINE,
-                                icon_color=COLOR_REC_BTN,
-                                icon_size=18,
-                                disabled=delete_disabled,
-                                tooltip="Eliminar modelo y archivos de AWS S3",
-                                on_click=lambda ev, c=cat: self.delete_category_from_cloud(c)
-                            )
-
-                            cat_row = ft.Container(
-                                content=ft.Row([
-                                    ft.Container(
-                                        content=ft.Row([
-                                            ft.Icon(ft.Icons.FOLDER_SPECIAL_OUTLINED, color=COLOR_PRIMARY, size=18),
-                                            ft.Text(cat.upper(), size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
-                                        ], spacing=8),
-                                        width=220
-                                    ),
-                                    ft.Container(content=local_badge, width=190),
-                                    ft.Container(content=cloud_badge, width=220),
-                                    ft.Row([btn_upload, btn_del_cloud], spacing=6, expand=True)
-                                ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                                bgcolor="#FFFFFF",
-                                border=ft.Border.all(1, COLOR_BORDER),
-                                border_radius=8,
-                                padding=ft.Padding(12, 6, 12, 6)
-                            )
-                            self.cloud_categories_listview.controls.append(cat_row)
+                    if current:
+                        self.render_cloud_model_card(current)
+                        self.refresh_cloud_resources_table(current)
+                    else:
+                        self.cloud_model_card_container.content = ft.Container(
+                            content=ft.Text("No hay categorías registradas en local ni en S3.", size=12, color=COLOR_TEXT_MUTED),
+                            padding=10
+                        )
+                        self.cloud_resources_listview.controls.clear()
+                        update_ui_safely(self.cloud_model_card_container)
+                        update_ui_safely(self.cloud_resources_listview)
 
                     self.cloud_progress_ring.visible = False
                     self.lbl_cloud_status.value = f"Estados actualizados ({len(all_cats)} categorías inspeccionadas en AWS S3)."
                     update_ui_safely(self.cloud_progress_ring)
                     update_ui_safely(self.lbl_cloud_status)
-                    update_ui_safely(self.cloud_categories_listview)
 
                 if self.page and hasattr(self.page, "run_thread"):
                     self.page.run_thread(_ui_populate)
+                else:
+                    _ui_populate()
 
             except Exception as e:
                 def _ui_fail():
@@ -1492,6 +1856,8 @@ class LSPUIController:
                     update_ui_safely(self.lbl_cloud_status)
                 if self.page and hasattr(self.page, "run_thread"):
                     self.page.run_thread(_ui_fail)
+                else:
+                    _ui_fail()
 
         threading.Thread(target=_async_refresh, daemon=True).start()
 
@@ -1829,8 +2195,9 @@ def build_training_view(controller: LSPUIController) -> ft.Container:
             monitor_camara,
             ft.Row([
                 controller.btn_camera,
+                controller.switch_avatar,
                 controller.btn_generate_cnn
-            ], alignment=ft.MainAxisAlignment.CENTER, spacing=16)
+            ], alignment=ft.MainAxisAlignment.CENTER, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=14)
         ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
         bgcolor=COLOR_CARD_BG,
         border=ft.Border.all(1, COLOR_BORDER),
@@ -2074,12 +2441,14 @@ def build_live_testing_view(controller: LSPUIController) -> ft.Container:
 
 def build_cloud_view(controller: LSPUIController) -> ft.Container:
     """
-    Construye la vista de Sincronización y Despliegue en la Nube (AWS S3):
-    - Encabezado con banner de nube, bucket activo y botón de recarga.
-    - Tabla/lista de categorías con estado local (.keras), estado en S3 (TF.js) y botones de acción.
-    - Consola inferior de transferencia con barra de progreso lineal en tiempo real.
+    Construye la vista de Sincronización Nube (AWS S3) y Gestión de Recursos Didácticos:
+    1. Selector de Categoría Activa: Dropdown superior con botón Refrescar y Badge del Bucket.
+    2. Panel de Modelo (Cabecera): Tarjeta compacta para compilar y sincronizar el modelo TF.js en S3.
+    3. Sección: Gestión de Recursos Didácticos (Guías de Señas):
+       Tabla interactiva de palabras con estado local (guia.gif / guia.png), badge de S3 y acciones.
+    4. Consola de Transferencia Inferior: Barra de progreso en tiempo real y mensajes.
     """
-    # 1. Encabezado de Nube
+    # 1. Encabezado de Nube con Selector de Categoría Activa
     card_header = ft.Container(
         content=ft.Row([
             ft.Row([
@@ -2090,8 +2459,8 @@ def build_cloud_view(controller: LSPUIController) -> ft.Container:
                     padding=8
                 ),
                 ft.Column([
-                    ft.Text("PANEL DE SINCRONIZACIÓN Y DESPLIEGUE CLOUD", size=14, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
-                    ft.Text("Sincronización bidireccional con AWS S3 y compilación a TensorFlow.js para el cliente web", size=11, color=COLOR_TEXT_MUTED)
+                    ft.Text("PANEL DE SINCRONIZACIÓN Y RECURSOS NUBE (AWS S3)", size=14, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
+                    ft.Text("Gestión unificada de modelos TensorFlow.js y guías visuales didácticas (GIF/Imagen)", size=11, color=COLOR_TEXT_MUTED)
                 ], spacing=1)
             ], spacing=10),
             ft.Row([
@@ -2104,15 +2473,16 @@ def build_cloud_view(controller: LSPUIController) -> ft.Container:
                     border_radius=8,
                     padding=ft.Padding(10, 6, 10, 6)
                 ),
+                controller.cloud_category_dropdown,
                 ft.Button(
                     content="Refrescar Estados",
                     icon=ft.Icons.REFRESH,
                     bgcolor=COLOR_PRIMARY,
                     color=ft.Colors.WHITE,
                     on_click=controller.refresh_cloud_table,
-                    height=36
+                    height=38
                 )
-            ], spacing=10)
+            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         bgcolor=COLOR_CARD_BG,
         border=ft.Border.all(1, COLOR_BORDER),
@@ -2120,28 +2490,58 @@ def build_cloud_view(controller: LSPUIController) -> ft.Container:
         padding=12
     )
 
-    # 2. Tabla de Categorías de Sincronización
+    # 2. Panel de Modelo (Cabecera)
+    card_model = ft.Container(
+        content=ft.Column([
+            ft.Row([
+                ft.Row([
+                    ft.Icon(ft.Icons.MEMORY, color=COLOR_PRIMARY, size=18),
+                    ft.Text("1. Modelo Predictivo Web (TensorFlow.js)", size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+                ], spacing=6),
+                ft.Container(
+                    content=ft.Text("MOTOR INFERENCIA WEB", size=9, weight=ft.FontWeight.BOLD, color=COLOR_PRIMARY),
+                    bgcolor=COLOR_PRIMARY_LIGHT,
+                    border_radius=4,
+                    padding=ft.Padding(6, 2, 6, 2)
+                )
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            controller.cloud_model_card_container
+        ], spacing=8),
+        bgcolor=COLOR_CARD_BG,
+        border=ft.Border.all(1, COLOR_BORDER),
+        border_radius=12,
+        padding=12
+    )
+
+    # 3. Sección: Gestión de Recursos Didácticos (Guías de Señas)
     table_header = ft.Container(
         content=ft.Row([
-            ft.Container(ft.Text("CATEGORÍA DE SEÑAS", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=220),
-            ft.Container(ft.Text("MODELO LOCAL (.KERAS)", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=190),
-            ft.Container(ft.Text("ESTADO EN AWS S3 (TF.JS)", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=220),
-            ft.Container(ft.Text("ACCIONES DE SINCRONIZACIÓN", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), expand=True)
+            ft.Container(ft.Text("PALABRA / SEÑA", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=180),
+            ft.Container(ft.Text("GUÍA LOCAL (DIDÁCTICA)", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=180),
+            ft.Container(ft.Text("ESTADO EN AWS S3", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=180),
+            ft.Container(ft.Text("ACCIONES DE GESTIÓN MULTIMEDIA", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), expand=True)
         ], alignment=ft.MainAxisAlignment.START),
         padding=ft.Padding(12, 6, 12, 6),
         bgcolor="#F8FAFC",
         border_radius=8
     )
 
-    card_table = ft.Container(
+    card_resources = ft.Container(
         content=ft.Column([
+            ft.Row([
+                ft.Row([
+                    ft.Icon(ft.Icons.VIDEO_LIBRARY_OUTLINED, color=COLOR_PRIMARY, size=18),
+                    ft.Text("2. Gestión de Recursos Didácticos (Guías de Señas)", size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+                ], spacing=6),
+                ft.Text("S3: recursos/{categoria}/{palabra}.[ext]", size=11, color=COLOR_TEXT_MUTED)
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             table_header,
             ft.Container(
-                content=controller.cloud_categories_listview,
-                height=380,
+                content=controller.cloud_resources_listview,
+                height=260,
                 padding=2
             )
-        ], spacing=6),
+        ], spacing=8),
         bgcolor=COLOR_CARD_BG,
         border=ft.Border.all(1, COLOR_BORDER),
         border_radius=12,
@@ -2149,7 +2549,7 @@ def build_cloud_view(controller: LSPUIController) -> ft.Container:
         expand=True
     )
 
-    # 3. Consola de Transferencia Inferior
+    # 4. Consola de Transferencia Inferior
     card_console = ft.Container(
         content=ft.Column([
             ft.Row([
@@ -2167,7 +2567,8 @@ def build_cloud_view(controller: LSPUIController) -> ft.Container:
     return ft.Container(
         content=ft.Column([
             card_header,
-            card_table,
+            card_model,
+            card_resources,
             card_console
         ], spacing=10, expand=True),
         padding=0

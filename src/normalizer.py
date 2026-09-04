@@ -56,6 +56,7 @@ class LSPNormalizer:
         Total: 85 landmarks (255 coordenadas flotantes)
         """
         results = self.holistic.process(frame_rgb)
+        self.last_results = results
         
         # 1. Mano Izquierda (21 puntos x 3 coord = 63)
         lh = []

@@ -49,6 +49,10 @@ class LSPVisionService:
         self.last_brightness = 100.0
         self.fps = 0.0
 
+        # Modo Avatar de Privacidad (Títere vectorial de-identificado)
+        self.privacy_avatar_mode = False
+        self.avatar_recording_frames = []
+
     def update_params(self, delay: float, frames: int):
         """Permite al docente alterar los parámetros de captura en caliente desde Flet."""
         with self.state_lock:
@@ -114,6 +118,7 @@ class LSPVisionService:
             self.recording_category = category_name.strip()
             self.recording_word = word.strip()
             self.recording_buffer = []
+            self.avatar_recording_frames = []
             self.countdown_start_time = time.time()
 
         self.change_state("Preparacion", f"Prepárate en 3s para: '{word.upper()}'")
@@ -126,7 +131,151 @@ class LSPVisionService:
         """Cancela la captura actual y vuelve a Inactivo."""
         with self.state_lock:
             self.recording_buffer = []
+            self.avatar_recording_frames = []
         self.change_state("Inactivo", "Captura cancelada")
+
+    def set_privacy_avatar_mode(self, enabled: bool):
+        """Activa o desactiva el Modo Avatar de Privacidad (descarte de píxeles reales)."""
+        with self.state_lock:
+            self.privacy_avatar_mode = bool(enabled)
+            self.avatar_recording_frames = []
+
+    def render_privacy_avatar(self, image_width: int, image_height: int, landmarks: dict = None, holistic_results=None) -> np.ndarray:
+        """
+        Genera un lienzo limpio (#F4F8FA) y dibuja un avatar animado (títere vectorial)
+        basado en los landmarks de pose, rostro y manos.
+        Descarta completamente el feed RGB real para proteger la privacidad del docente.
+        """
+        w, h = image_width, image_height
+        canvas = np.full((h, w, 3), [250, 248, 244], dtype=np.uint8)
+
+        if landmarks is None and holistic_results is None:
+            return canvas
+
+        color_celeste = (226, 144, 74)   # #4A90E2 en BGR
+        color_azul_oscuro = (93, 54, 26) # #1A365D en BGR
+        color_blanco = (255, 255, 255)
+
+        # Distintivo superior de Privacidad
+        cv2.putText(canvas, "AVATAR DE PRIVACIDAD (DE-IDENTIFICADO)", (16, 26),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.45, color_azul_oscuro, 1, cv2.LINE_AA)
+
+        # 1. Pose / Torso y Brazos
+        pose = landmarks.get("pose") if landmarks else None
+        if pose is not None and not np.all(pose == 0.0) and len(pose) >= 6:
+            ls = (int(pose[0][0] * w), int(pose[0][1] * h))
+            rs = (int(pose[1][0] * w), int(pose[1][1] * h))
+            le = (int(pose[2][0] * w), int(pose[2][1] * h))
+            re = (int(pose[3][0] * w), int(pose[3][1] * h))
+            lw = (int(pose[4][0] * w), int(pose[4][1] * h))
+            rw = (int(pose[5][0] * w), int(pose[5][1] * h))
+            neck = ((ls[0] + rs[0]) // 2, (ls[1] + rs[1]) // 2)
+
+            sh_dist = int(np.linalg.norm(np.array(ls) - np.array(rs)))
+            torso_bottom = (neck[0], int(neck[1] + max(60, sh_dist * 0.9)))
+            cv2.line(canvas, neck, torso_bottom, color_azul_oscuro, 5, cv2.LINE_AA)
+            cv2.line(canvas, ls, rs, color_azul_oscuro, 4, cv2.LINE_AA)
+
+            # Brazos (Azul oscuro exterior + blanco interior estilo vector)
+            for p1, p2 in [(ls, le), (le, lw), (rs, re), (re, rw)]:
+                cv2.line(canvas, p1, p2, color_azul_oscuro, 5, cv2.LINE_AA)
+                cv2.line(canvas, p1, p2, color_blanco, 2, cv2.LINE_AA)
+
+            for pt in [ls, rs, le, re]:
+                cv2.circle(canvas, pt, 6, color_celeste, -1, cv2.LINE_AA)
+                cv2.circle(canvas, pt, 2, color_blanco, -1, cv2.LINE_AA)
+
+        # 2. Rostro Minimalista (37 puntos: cejas, ojos, labios, nariz)
+        face = landmarks.get("face") if landmarks else None
+        if face is not None and not np.all(face == 0.0) and len(face) == 37:
+            # Silueta cefálica suave
+            nose_pt = (int(face[36][0] * w), int(face[36][1] * h))
+            left_eye_center = (int(np.mean(face[30:33, 0]) * w), int(np.mean(face[30:33, 1]) * h))
+            right_eye_center = (int(np.mean(face[33:36, 0]) * w), int(np.mean(face[33:36, 1]) * h))
+            eye_dist = int(np.linalg.norm(np.array(left_eye_center) - np.array(right_eye_center)))
+            head_rx = max(35, int(eye_dist * 1.3))
+            head_ry = max(45, int(eye_dist * 1.6))
+            head_center = (nose_pt[0], nose_pt[1] - 5)
+
+            # Fondo suave de cabeza y borde celeste
+            cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, (235, 242, 248), -1, cv2.LINE_AA)
+            cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, color_celeste, 2, cv2.LINE_AA)
+
+            # Cejas (Gesticulación emocional / gramatical)
+            leb_pts = np.array([[int(face[i][0] * w), int(face[i][1] * h)] for i in range(20, 25)], dtype=np.int32)
+            reb_pts = np.array([[int(face[i][0] * w), int(face[i][1] * h)] for i in range(25, 30)], dtype=np.int32)
+            cv2.polylines(canvas, [leb_pts], False, color_azul_oscuro, 3, cv2.LINE_AA)
+            cv2.polylines(canvas, [reb_pts], False, color_azul_oscuro, 3, cv2.LINE_AA)
+
+            # Ojos estilizados
+            for ec in [left_eye_center, right_eye_center]:
+                cv2.circle(canvas, ec, 5, color_azul_oscuro, -1, cv2.LINE_AA)
+                cv2.circle(canvas, (ec[0] - 1, ec[1] - 1), 2, color_blanco, -1, cv2.LINE_AA)
+
+            # Nariz (anclaje central)
+            cv2.circle(canvas, nose_pt, 3, color_celeste, -1, cv2.LINE_AA)
+
+            # Labios (Gesticulación oral y rasgos no manuales)
+            lip_pts = np.array([[int(face[i][0] * w), int(face[i][1] * h)] for i in range(20)], dtype=np.int32)
+            cv2.polylines(canvas, [lip_pts], True, color_azul_oscuro, 2, cv2.LINE_AA)
+            cv2.polylines(canvas, [lip_pts], True, color_celeste, 1, cv2.LINE_AA)
+
+        # 3. Manos de Alta Fidelidad (21 puntos por mano)
+        HAND_CONNECTIONS = [
+            (0, 1), (1, 2), (2, 3), (3, 4),        # Pulgar
+            (0, 5), (5, 6), (6, 7), (7, 8),        # Índice
+            (5, 9), (9, 10), (10, 11), (11, 12),   # Medio
+            (9, 13), (13, 14), (14, 15), (15, 16), # Anular
+            (13, 17), (17, 18), (18, 19), (19, 20),# Meñique
+            (0, 17)                                # Palma
+        ]
+        if landmarks:
+            for hand_key in ["left_hand", "right_hand"]:
+                hand = landmarks.get(hand_key)
+                if hand is not None and not np.all(hand == 0.0) and len(hand) == 21:
+                    # Huesos / Conexiones
+                    for s_idx, e_idx in HAND_CONNECTIONS:
+                        p1 = (int(hand[s_idx][0] * w), int(hand[s_idx][1] * h))
+                        p2 = (int(hand[e_idx][0] * w), int(hand[e_idx][1] * h))
+                        cv2.line(canvas, p1, p2, color_azul_oscuro, 4, cv2.LINE_AA)
+                        cv2.line(canvas, p1, p2, color_blanco, 2, cv2.LINE_AA)
+
+                    # Nudillos y Articulaciones
+                    for pt in hand:
+                        cpt = (int(pt[0] * w), int(pt[1] * h))
+                        cv2.circle(canvas, cpt, 4, color_celeste, -1, cv2.LINE_AA)
+                        cv2.circle(canvas, cpt, 1, color_blanco, -1, cv2.LINE_AA)
+
+        return canvas
+
+    def _save_avatar_gif(self, category: str, word: str, frames: list):
+        """Guarda un GIF didáctico de-identificado en segundo plano sin bloquear."""
+        try:
+            import os
+            from PIL import Image
+            from src.cloud_service import DATA_DIR
+            target_dir = os.path.join(DATA_DIR, "muestras", category.lower().strip(), word.lower().strip())
+            os.makedirs(target_dir, exist_ok=True)
+            gif_path = os.path.join(target_dir, "guia.gif")
+            
+            pil_images = []
+            for f in frames:
+                small = cv2.resize(f, (320, 240))
+                rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+                pil_images.append(Image.fromarray(rgb))
+                
+            if pil_images:
+                pil_images[0].save(
+                    gif_path,
+                    save_all=True,
+                    append_images=pil_images[1:],
+                    optimize=True,
+                    duration=40,
+                    loop=0
+                )
+                print(f"[AVATAR] Guía animada de-identificada guardada en: {gif_path}")
+        except Exception as e:
+            print(f"[AVATAR] Error guardando guía GIF: {e}")
 
     def _draw_skeletons(self, frame, landmarks):
         """Dibuja los esqueletos optimizados en el frame."""
@@ -227,8 +376,19 @@ class LSPVisionService:
                 print(f"Error en landmarks: {e}")
                 continue
 
-            # Dibujar esqueletos en pantalla
-            self._draw_skeletons(frame, landmarks)
+            # Sustitución del feed RGB o dibujo sobre cámara real
+            if self.privacy_avatar_mode:
+                # El feed original de la cámara se descarta COMPLETAMENTE para proteger la identidad biométrica
+                avatar_frame = self.render_privacy_avatar(
+                    frame.shape[1],
+                    frame.shape[0],
+                    landmarks=landmarks,
+                    holistic_results=getattr(self.normalizer, 'last_results', None)
+                )
+                frame = avatar_frame
+            else:
+                # Modo normal: Dibujar esqueletos sobre la cámara real
+                self._draw_skeletons(frame, landmarks)
 
             # Inferencia en tiempo real (LiveTester) si está activo
             if self.live_tester and getattr(self.live_tester, "is_active", False):
@@ -262,10 +422,13 @@ class LSPVisionService:
                     self.change_state("Grabacion", f"¡Grabando '{self.recording_word.upper()}' ({self.target_frames} frames)!")
                     with self.state_lock:
                         self.recording_buffer = []
+                        self.avatar_recording_frames = []
 
             elif state == "Grabacion":
                 with self.state_lock:
                     self.recording_buffer.append(flat_vector)
+                    if self.privacy_avatar_mode:
+                        self.avatar_recording_frames.append(frame.copy())
                     count = len(self.recording_buffer)
                     finished = (count >= self.target_frames)
                     if finished:
@@ -273,11 +436,20 @@ class LSPVisionService:
                         self.recording_buffer = []
                         cat = self.recording_category
                         word = self.recording_word
+                        avatar_frames_to_save = list(self.avatar_recording_frames)
+                        self.avatar_recording_frames = []
 
                 self._draw_recording_overlay(frame, count, self.target_frames)
 
                 if finished:
                     self.change_state("Fin", f"Grabación completada para '{word.upper()}'.")
+                    if self.privacy_avatar_mode and avatar_frames_to_save:
+                        threading.Thread(
+                            target=self._save_avatar_gif,
+                            args=(cat, word, avatar_frames_to_save),
+                            daemon=True
+                        ).start()
+
                     if self.recording_callback:
                         try:
                             if self.page and hasattr(self.page, "is_active") and not self.page.is_active:

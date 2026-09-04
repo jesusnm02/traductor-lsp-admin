@@ -34,14 +34,24 @@ def main(page: ft.Page):
     page.padding = ft.Padding(16, 12, 16, 12)
     page.scroll = ft.ScrollMode.AUTO
     
+    # Configuración de ventana centrada en el escritorio (solucion_interfaz_avatar_escritorio.md)
+    page.window_width = 1280
+    page.window_height = 840
+    page.window_resizable = False
     if hasattr(page, "window") and page.window:
-        page.window.width = 1280
-        page.window.height = 860
-        page.window.resizable = True
-    else:
-        page.window_width = 1280
-        page.window_height = 860
-        page.window_resizable = True
+        try:
+            page.window.width = 1280
+            page.window.height = 840
+            page.window.resizable = False
+            page.window.center()
+        except Exception:
+            pass
+    if hasattr(page, "window_center"):
+        try:
+            page.window_center()
+        except Exception:
+            pass
+    page.update()
 
     # =========================================================================
     # INICIALIZACIÓN UNIFICADA CON RUTAS ABSOLUTAS (solucion_rutas_y_limpieza.md)

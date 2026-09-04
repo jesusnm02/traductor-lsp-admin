@@ -1713,13 +1713,13 @@ class LSPUIController:
     def open_avatar_recorder_modal(self, category: str, word: str):
         """
         Abre una ventana modal (ft.AlertDialog) con el grabador interactivo en tiempo real del Avatar
-        de Privacidad. Descarta el feed RGB y dibuja el títere vectorial sobre lienzo escolar #F4F8FA.
-        Permite grabar GIFs didácticos o capturar fotos estáticas en PNG.
+        de Privacidad. Descarta el feed RGB y proyecta el avatar pedagógico sobre lienzo escolar #F4F8FA.
+        Dispone de 3 botones distribuidos simétricamente: Tomar Foto PNG, Grabar GIF/Video y Cancelar/Cerrar.
         """
         cat_clean = category.lower().strip()
         word_clean = word.lower().strip()
 
-        # Detener temporalmente la cámara principal si estaba encendida para evitar bloqueo en Windows
+        # Detener temporalmente la cámara principal si estaba encendida para evitar bloqueo de dispositivo en Windows
         was_main_cam_running = bool(self.vision_service and self.vision_service.is_running.is_set())
         if was_main_cam_running:
             self.vision_service.stop()
@@ -1730,68 +1730,68 @@ class LSPUIController:
         buffer_frames = []
         last_rendered_frame = [None]
 
+        # Visor de OpenCV en formato adaptado al lienzo pedagógico 600x450
         img_visor = ft.Image(
             src=EMPTY_PIXEL_DATA,
-            width=480,
-            height=340,
+            width=580,
+            height=370,
             fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain",
             border_radius=8
         )
 
-        lbl_modal_status = ft.Text("Iniciando cámara y renderizador de Avatar de Privacidad...", size=11, color=COLOR_PRIMARY, weight=ft.FontWeight.W_500)
+        lbl_modal_status = ft.Text("Iniciando cámara y renderizador de Avatar pedagógico...", size=11, color=COLOR_PRIMARY, weight=ft.FontWeight.W_500)
         lbl_modal_counter = ft.Text("0 frames grabados", size=11, color=COLOR_TEXT_MUTED)
         progress_compile = ft.ProgressBar(visible=False, color=COLOR_PRIMARY, height=4)
 
-        btn_start_record = ft.Button(
-            content="Iniciar Grabación",
-            icon=ft.Icons.RADIO_BUTTON_CHECKED,
-            bgcolor="#EF4444",
-            color=ft.Colors.WHITE,
-            height=36
-        )
-
-        btn_stop_record = ft.Button(
-            content="Detener y Guardar GIF",
-            icon=ft.Icons.STOP,
-            bgcolor=COLOR_PRIMARY,
-            color=ft.Colors.WHITE,
-            disabled=True,
-            height=36
-        )
-
+        # Botón 1: Tomar Foto PNG
         btn_take_snapshot = ft.Button(
             content="Tomar Foto PNG",
             icon=ft.Icons.CAMERA_ALT,
             bgcolor="#0284C7",
             color=ft.Colors.WHITE,
-            height=36
+            height=38
         )
 
+        # Botón 2: Grabar GIF/Video (conmutador interactivo Grabar / Detener)
+        btn_record_toggle = ft.Button(
+            content="Grabar GIF/Video",
+            icon=ft.Icons.RADIO_BUTTON_CHECKED,
+            bgcolor="#EF4444",
+            color=ft.Colors.WHITE,
+            height=38
+        )
+
+        # Botón 3: Cancelar / Cerrar
         btn_close_dialog = ft.Button(
-            content="Cerrar",
+            content="Cancelar / Cerrar",
             icon=ft.Icons.CLOSE,
-            height=36
+            bgcolor="#64748B",
+            color=ft.Colors.WHITE,
+            height=38
         )
 
+        # AlertDialog espacioso (600x450) con distribución simétrica de los 3 botones
         recorder_dialog = ft.AlertDialog(
+            modal=True,
             title=ft.Row([
                 ft.Container(
-                    content=ft.Icon(ft.Icons.VIDEOCAM_ROUNDED, color=COLOR_PRIMARY, size=22),
+                    content=ft.Icon(ft.Icons.VIDEOCAM_ROUNDED, color=COLOR_PRIMARY, size=24),
                     bgcolor=COLOR_PRIMARY_LIGHT,
                     border_radius=8,
                     padding=8
                 ),
                 ft.Column([
-                    ft.Text(f"GRABADOR DE AVATAR: {word.upper()}", size=14, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
-                    ft.Text(f"Categoría: {category.upper()} • Títere Vectorial De-identificado (Lienzo Blanco-Celeste #F4F8FA)", size=10, color=COLOR_TEXT_MUTED)
-                ], spacing=1)
+                    ft.Text(f"GRABADOR DE AVATAR: {word.upper()}", size=15, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
+                    ft.Text(f"Categoría: {category.upper()} • Avatar Pedagógico Didáctico (Lienzo #F4F8FA)", size=10, color=COLOR_TEXT_MUTED)
+                ], spacing=2)
             ], spacing=10),
+            content_padding=20,
             content=ft.Container(
                 content=ft.Column([
                     ft.Container(
                         content=img_visor,
-                        width=480,
-                        height=340,
+                        width=580,
+                        height=370,
                         bgcolor="#F4F8FA",
                         border=ft.Border.all(1, COLOR_BORDER),
                         border_radius=10,
@@ -1799,13 +1799,23 @@ class LSPUIController:
                     ),
                     progress_compile,
                     ft.Row([lbl_modal_status, lbl_modal_counter], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    ft.Row([btn_start_record, btn_stop_record, btn_take_snapshot], spacing=8, alignment=ft.MainAxisAlignment.CENTER)
-                ], spacing=8, tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                width=500
+                ], spacing=6, tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                width=600,
+                height=450,
+                border_radius=12,
             ),
-            actions=[btn_close_dialog],
-            actions_alignment=ft.MainAxisAlignment.END,
-            modal=True,
+            actions=[
+                ft.Row(
+                    controls=[
+                        btn_take_snapshot,
+                        btn_record_toggle,
+                        btn_close_dialog
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_EVENLY,
+                    expand=True
+                )
+            ],
+            actions_alignment=ft.MainAxisAlignment.CENTER,
             open=True
         )
 
@@ -1821,74 +1831,89 @@ class LSPUIController:
                     pass
             # Restaurar la cámara principal si estaba en marcha antes de abrir el modal
             if was_main_cam_running:
-                self.vision_service.start()
+                def _restart_main_cam():
+                    time.sleep(0.3)
+                    self.vision_service.start()
+                threading.Thread(target=_restart_main_cam, daemon=True).start()
 
-        def _on_start(e=None):
-            buffer_frames.clear()
-            is_recording.set()
-            btn_start_record.disabled = True
-            btn_stop_record.disabled = False
-            btn_take_snapshot.disabled = True
-            lbl_modal_status.value = "🔴 GRABANDO AVATAR... Realice la seña didáctica frente a la cámara"
-            lbl_modal_status.color = "#EF4444"
-            update_ui_safely(btn_start_record)
-            update_ui_safely(btn_stop_record)
-            update_ui_safely(btn_take_snapshot)
-            update_ui_safely(lbl_modal_status)
+        def _on_record_toggle(e=None):
+            if not is_recording.is_set():
+                # Iniciar grabación
+                buffer_frames.clear()
+                is_recording.set()
+                btn_record_toggle.content = "Detener y Guardar"
+                btn_record_toggle.icon = ft.Icons.STOP
+                btn_record_toggle.bgcolor = "#DC2626"
+                btn_take_snapshot.disabled = True
+                lbl_modal_status.value = "🔴 GRABANDO AVATAR... Realice la seña didáctica"
+                lbl_modal_status.color = "#EF4444"
+                lbl_modal_counter.value = "0 frames grabados"
+                update_ui_safely(btn_record_toggle)
+                update_ui_safely(btn_take_snapshot)
+                update_ui_safely(lbl_modal_status)
+                update_ui_safely(lbl_modal_counter)
+            else:
+                # Detener grabación y procesar animación GIF
+                is_recording.clear()
+                btn_record_toggle.disabled = True
+                btn_record_toggle.content = "Compilando..."
+                btn_record_toggle.icon = ft.Icons.HOURGLASS_EMPTY
+                lbl_modal_status.value = f"⏳ Compilando animación GIF ({len(buffer_frames)} frames)..."
+                lbl_modal_status.color = COLOR_PRIMARY
+                progress_compile.visible = True
+                update_ui_safely(btn_record_toggle)
+                update_ui_safely(lbl_modal_status)
+                update_ui_safely(progress_compile)
 
-        def _on_stop(e=None):
-            is_recording.clear()
-            btn_stop_record.disabled = True
-            lbl_modal_status.value = f"⏳ Compilando animación GIF ({len(buffer_frames)} frames)..."
-            lbl_modal_status.color = COLOR_PRIMARY
-            progress_compile.visible = True
-            update_ui_safely(btn_stop_record)
-            update_ui_safely(lbl_modal_status)
-            update_ui_safely(progress_compile)
+                def _save_worker():
+                    try:
+                        if not buffer_frames:
+                            raise ValueError("No se registraron frames durante la grabación.")
+                        frames_to_save = list(buffer_frames)
+                        saved_path = self.cloud_service.save_avatar_recording(cat_clean, word_clean, frames_to_save)
+                        filename = os.path.basename(saved_path)
 
-            def _save_worker():
-                try:
-                    if not buffer_frames:
-                        raise ValueError("No se registraron frames durante la grabación.")
-                    frames_to_save = list(buffer_frames)
-                    saved_path = self.cloud_service.save_avatar_recording(cat_clean, word_clean, frames_to_save)
-                    filename = os.path.basename(saved_path)
+                        def _ui_done():
+                            progress_compile.visible = False
+                            lbl_modal_status.value = f"✅ GIF '{filename}' guardado con éxito ({len(frames_to_save)} frames)."
+                            lbl_modal_status.color = COLOR_SUCCESS
+                            btn_record_toggle.disabled = False
+                            btn_record_toggle.content = "Grabar GIF/Video"
+                            btn_record_toggle.icon = ft.Icons.RADIO_BUTTON_CHECKED
+                            btn_record_toggle.bgcolor = "#EF4444"
+                            btn_take_snapshot.disabled = False
+                            update_ui_safely(progress_compile)
+                            update_ui_safely(lbl_modal_status)
+                            update_ui_safely(btn_record_toggle)
+                            update_ui_safely(btn_take_snapshot)
+                            show_snack_bar(self.page, f"Avatar didáctico '{filename}' guardado para '{word.upper()}'.")
+                            self.refresh_cloud_resources_table(category)
 
-                    def _ui_done():
-                        progress_compile.visible = False
-                        lbl_modal_status.value = f"✅ GIF '{filename}' guardado con éxito ({len(frames_to_save)} frames)."
-                        lbl_modal_status.color = COLOR_SUCCESS
-                        btn_start_record.disabled = False
-                        btn_take_snapshot.disabled = False
-                        update_ui_safely(progress_compile)
-                        update_ui_safely(lbl_modal_status)
-                        update_ui_safely(btn_start_record)
-                        update_ui_safely(btn_take_snapshot)
-                        show_snack_bar(self.page, f"Avatar didáctico '{filename}' guardado para '{word.upper()}'.")
-                        self.refresh_cloud_resources_table(category)
+                        if self.page and hasattr(self.page, "run_thread"):
+                            self.page.run_thread(_ui_done)
+                        else:
+                            _ui_done()
+                    except Exception as ex:
+                        def _ui_err():
+                            progress_compile.visible = False
+                            lbl_modal_status.value = f"Error al compilar GIF: {ex}"
+                            lbl_modal_status.color = "#EF4444"
+                            btn_record_toggle.disabled = False
+                            btn_record_toggle.content = "Grabar GIF/Video"
+                            btn_record_toggle.icon = ft.Icons.RADIO_BUTTON_CHECKED
+                            btn_record_toggle.bgcolor = "#EF4444"
+                            btn_take_snapshot.disabled = False
+                            update_ui_safely(progress_compile)
+                            update_ui_safely(lbl_modal_status)
+                            update_ui_safely(btn_record_toggle)
+                            update_ui_safely(btn_take_snapshot)
+                            show_snack_bar(self.page, f"Error al guardar GIF: {ex}", is_error=True)
+                        if self.page and hasattr(self.page, "run_thread"):
+                            self.page.run_thread(_ui_err)
+                        else:
+                            _ui_err()
 
-                    if self.page and hasattr(self.page, "run_thread"):
-                        self.page.run_thread(_ui_done)
-                    else:
-                        _ui_done()
-                except Exception as ex:
-                    def _ui_err():
-                        progress_compile.visible = False
-                        lbl_modal_status.value = f"Error al compilar GIF: {ex}"
-                        lbl_modal_status.color = "#EF4444"
-                        btn_start_record.disabled = False
-                        btn_take_snapshot.disabled = False
-                        update_ui_safely(progress_compile)
-                        update_ui_safely(lbl_modal_status)
-                        update_ui_safely(btn_start_record)
-                        update_ui_safely(btn_take_snapshot)
-                        show_snack_bar(self.page, f"Error al guardar GIF: {ex}", is_error=True)
-                    if self.page and hasattr(self.page, "run_thread"):
-                        self.page.run_thread(_ui_err)
-                    else:
-                        _ui_err()
-
-            threading.Thread(target=_save_worker, daemon=True).start()
+                threading.Thread(target=_save_worker, daemon=True).start()
 
         def _on_snapshot(e=None):
             if last_rendered_frame[0] is None:
@@ -1917,12 +1942,13 @@ class LSPUIController:
 
             threading.Thread(target=_snap_worker, daemon=True).start()
 
-        btn_start_record.on_click = _on_start
-        btn_stop_record.on_click = _on_stop
+        btn_record_toggle.on_click = _on_record_toggle
         btn_take_snapshot.on_click = _on_snapshot
         btn_close_dialog.on_click = _on_close
 
         def _camera_worker():
+            # Pausa breve para garantizar que el controlador de hardware en Windows libere el puerto
+            time.sleep(0.3)
             cap = cv2.VideoCapture(0, cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY)
             if not cap.isOpened():
                 cap = cv2.VideoCapture(0)
@@ -1938,7 +1964,7 @@ class LSPUIController:
                 return
 
             def _ui_cam_ready():
-                lbl_modal_status.value = "Cámara lista • Títere vectorial activo en tiempo real"
+                lbl_modal_status.value = "Cámara activa • Avatar pedagógico proyectándose en tiempo real"
                 lbl_modal_status.color = COLOR_PRIMARY
                 update_ui_safely(lbl_modal_status)
             if self.page and hasattr(self.page, "run_thread"):
@@ -1948,7 +1974,7 @@ class LSPUIController:
 
             while modal_running.is_set():
                 ret, frame = cap.read()
-                if not ret:
+                if not ret or frame is None:
                     time.sleep(0.03)
                     continue
 
@@ -1980,21 +2006,22 @@ class LSPUIController:
                     cv2.putText(display_frame, f"REC {cnt}", (48, 36),
                                 cv2.FONT_HERSHEY_DUPLEX, 0.55, (0, 0, 220), 1, cv2.LINE_AA)
 
-                    def _ui_update_count(c=cnt):
-                        lbl_modal_counter.value = f"{c} frames grabados"
-                        update_ui_safely(lbl_modal_counter)
-                    if self.page and hasattr(self.page, "run_thread"):
-                        self.page.run_thread(_ui_update_count)
+                    if cnt % 4 == 0:
+                        lbl_modal_counter.value = f"{cnt} frames grabados"
+                        try:
+                            lbl_modal_counter.update()
+                        except Exception:
+                            pass
 
-                # Codificar a base64 JPEG para el visor de Flet
+                # Actualización asíncrona directa y fluida del visor sin inundar colas de hilos
                 ret_enc, enc_buf = cv2.imencode(".jpg", display_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
                 if ret_enc:
                     b64_str = base64.b64encode(enc_buf).decode("utf-8")
-                    def _ui_feed(val=b64_str):
-                        img_visor.src_base64 = val
-                        update_ui_safely(img_visor)
-                    if self.page and hasattr(self.page, "run_thread"):
-                        self.page.run_thread(_ui_feed)
+                    img_visor.src_base64 = b64_str
+                    try:
+                        img_visor.update()
+                    except Exception:
+                        pass
 
                 time.sleep(0.033)
 

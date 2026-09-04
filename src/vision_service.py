@@ -142,25 +142,58 @@ class LSPVisionService:
 
     def render_privacy_avatar(self, image_width: int, image_height: int, landmarks: dict = None, holistic_results=None) -> np.ndarray:
         """
-        Genera un lienzo limpio (#F4F8FA) y dibuja un avatar animado (títere vectorial)
+        Genera un lienzo limpio (#F4F8FA) y dibuja un avatar pedagógico infantil (caricatura amigable)
         basado en los landmarks de pose, rostro y manos.
-        Descarta completamente el feed RGB real para proteger la privacidad del docente.
+        Descarta completamente el feed RGB real y la malla fría de 468 puntos para evitar confusión
+        en niños con discapacidad.
         """
         w, h = image_width, image_height
         canvas = np.full((h, w, 3), [250, 248, 244], dtype=np.uint8)
 
-        if landmarks is None and holistic_results is None:
+        # Si no se pasó landmarks directamente pero se dispone de holistic_results, reconstruir
+        if (landmarks is None or not any(k in landmarks for k in ["pose", "face", "left_hand", "right_hand"])) and holistic_results is not None:
+            try:
+                lh = [[lm.x, lm.y, lm.z] for lm in holistic_results.left_hand_landmarks.landmark] if holistic_results.left_hand_landmarks else [[0.0, 0.0, 0.0]] * 21
+                rh = [[lm.x, lm.y, lm.z] for lm in holistic_results.right_hand_landmarks.landmark] if holistic_results.right_hand_landmarks else [[0.0, 0.0, 0.0]] * 21
+                pose = []
+                if holistic_results.pose_landmarks:
+                    for idx in [11, 12, 13, 14, 15, 16]:
+                        lm = holistic_results.pose_landmarks.landmark[idx]
+                        pose.append([lm.x, lm.y, lm.z])
+                else:
+                    pose = [[0.0, 0.0, 0.0]] * 6
+                face = []
+                if holistic_results.face_landmarks:
+                    face_indices = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146,
+                                    70, 63, 105, 66, 107, 300, 293, 334, 296, 336, 33, 133, 159, 362, 263, 386, 4]
+                    for idx in face_indices:
+                        lm = holistic_results.face_landmarks.landmark[idx]
+                        face.append([lm.x, lm.y, lm.z])
+                else:
+                    face = [[0.0, 0.0, 0.0]] * 37
+                landmarks = {
+                    "left_hand": np.array(lh, dtype=np.float32),
+                    "right_hand": np.array(rh, dtype=np.float32),
+                    "pose": np.array(pose, dtype=np.float32),
+                    "face": np.array(face, dtype=np.float32),
+                }
+            except Exception:
+                pass
+
+        if landmarks is None:
             return canvas
 
-        color_celeste = (226, 144, 74)   # #4A90E2 en BGR
-        color_azul_oscuro = (93, 54, 26) # #1A365D en BGR
+        color_celeste = (226, 144, 74)   # #4A90E2 en BGR (celeste escolar)
+        color_azul_oscuro = (93, 54, 26) # #1A365D en BGR (azul institucional)
         color_blanco = (255, 255, 255)
+        color_mejillas = (215, 215, 255) # Rosa suave para mejillas animadas
+        color_boca_relleno = (190, 140, 245)
 
-        # Distintivo superior de Privacidad
-        cv2.putText(canvas, "AVATAR DE PRIVACIDAD (DE-IDENTIFICADO)", (16, 26),
+        # Distintivo superior de Privacidad pedagógica
+        cv2.putText(canvas, "AVATAR DIDACTICO DE PRIVACIDAD", (16, 26),
                     cv2.FONT_HERSHEY_DUPLEX, 0.45, color_azul_oscuro, 1, cv2.LINE_AA)
 
-        # 1. Pose / Torso y Brazos
+        # 1. Torso y Brazos Simplificados (Línea de hombros redondeada en celeste escolar)
         pose = landmarks.get("pose") if landmarks else None
         if pose is not None and not np.all(pose == 0.0) and len(pose) >= 6:
             ls = (int(pose[0][0] * w), int(pose[0][1] * h))
@@ -172,55 +205,72 @@ class LSPVisionService:
             neck = ((ls[0] + rs[0]) // 2, (ls[1] + rs[1]) // 2)
 
             sh_dist = int(np.linalg.norm(np.array(ls) - np.array(rs)))
-            torso_bottom = (neck[0], int(neck[1] + max(60, sh_dist * 0.9)))
-            cv2.line(canvas, neck, torso_bottom, color_azul_oscuro, 5, cv2.LINE_AA)
-            cv2.line(canvas, ls, rs, color_azul_oscuro, 4, cv2.LINE_AA)
+            torso_bottom = (neck[0], int(neck[1] + max(50, sh_dist * 0.85)))
 
-            # Brazos (Azul oscuro exterior + blanco interior estilo vector)
+            # Línea de hombros simple y redondeada en celeste escolar para estabilidad visual
+            cv2.line(canvas, ls, rs, color_celeste, 7, cv2.LINE_AA)
+            cv2.circle(canvas, ls, 5, color_celeste, -1, cv2.LINE_AA)
+            cv2.circle(canvas, rs, 5, color_celeste, -1, cv2.LINE_AA)
+            cv2.line(canvas, neck, torso_bottom, color_celeste, 6, cv2.LINE_AA)
+
+            # Brazos redondeados en celeste escolar
             for p1, p2 in [(ls, le), (le, lw), (rs, re), (re, rw)]:
-                cv2.line(canvas, p1, p2, color_azul_oscuro, 5, cv2.LINE_AA)
-                cv2.line(canvas, p1, p2, color_blanco, 2, cv2.LINE_AA)
+                cv2.line(canvas, p1, p2, color_celeste, 5, cv2.LINE_AA)
 
+            # Articulaciones de codos y hombros (círculos blancos con borde azul)
             for pt in [ls, rs, le, re]:
-                cv2.circle(canvas, pt, 6, color_celeste, -1, cv2.LINE_AA)
-                cv2.circle(canvas, pt, 2, color_blanco, -1, cv2.LINE_AA)
+                cv2.circle(canvas, pt, 6, color_blanco, -1, cv2.LINE_AA)
+                cv2.circle(canvas, pt, 6, color_azul_oscuro, 2, cv2.LINE_AA)
 
-        # 2. Rostro Minimalista (37 puntos: cejas, ojos, labios, nariz)
+        # 2. Cara Simplificada Tipo Caricatura Infantil (Sin malla geométrica fría)
         face = landmarks.get("face") if landmarks else None
         if face is not None and not np.all(face == 0.0) and len(face) == 37:
-            # Silueta cefálica suave
             nose_pt = (int(face[36][0] * w), int(face[36][1] * h))
             left_eye_center = (int(np.mean(face[30:33, 0]) * w), int(np.mean(face[30:33, 1]) * h))
             right_eye_center = (int(np.mean(face[33:36, 0]) * w), int(np.mean(face[33:36, 1]) * h))
             eye_dist = int(np.linalg.norm(np.array(left_eye_center) - np.array(right_eye_center)))
-            head_rx = max(35, int(eye_dist * 1.3))
-            head_ry = max(45, int(eye_dist * 1.6))
-            head_center = (nose_pt[0], nose_pt[1] - 5)
+            if eye_dist < 10:
+                eye_dist = 40
 
-            # Fondo suave de cabeza y borde celeste
-            cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, (235, 242, 248), -1, cv2.LINE_AA)
+            head_center = (nose_pt[0], nose_pt[1] - max(5, int(eye_dist * 0.15)))
+            head_rx = max(40, int(eye_dist * 1.35))
+            head_ry = max(50, int(eye_dist * 1.65))
+
+            # Fondo suave y redondeado de cabeza tipo dibujo animado
+            cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, (240, 246, 252), -1, cv2.LINE_AA)
             cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, color_celeste, 2, cv2.LINE_AA)
 
-            # Cejas (Gesticulación emocional / gramatical)
+            # Mejillas sonrosadas pedagógicas
+            blush_r = max(6, int(eye_dist * 0.18))
+            blush_left = (int(left_eye_center[0] - eye_dist * 0.1), int(left_eye_center[1] + eye_dist * 0.35))
+            blush_right = (int(right_eye_center[0] + eye_dist * 0.1), int(right_eye_center[1] + eye_dist * 0.35))
+            cv2.circle(canvas, blush_left, blush_r, color_mejillas, -1, cv2.LINE_AA)
+            cv2.circle(canvas, blush_right, blush_r, color_mejillas, -1, cv2.LINE_AA)
+
+            # Ojos de caricatura: Dos círculos grandes y expresivos en azul oscuro con brillo blanco
+            eye_radius = max(8, min(14, int(eye_dist * 0.22)))
+            for ec in [left_eye_center, right_eye_center]:
+                cv2.circle(canvas, ec, eye_radius, color_azul_oscuro, -1, cv2.LINE_AA)
+                # Reflejo / brillo blanco en la pupila para aspecto vivo y amigable
+                shine_r = max(2, eye_radius // 3)
+                cv2.circle(canvas, (ec[0] - eye_radius // 3, ec[1] - eye_radius // 3), shine_r, color_blanco, -1, cv2.LINE_AA)
+
+            # Cejas amigables: Dos arcos gruesos y expresivos sobre los ojos
             leb_pts = np.array([[int(face[i][0] * w), int(face[i][1] * h)] for i in range(20, 25)], dtype=np.int32)
             reb_pts = np.array([[int(face[i][0] * w), int(face[i][1] * h)] for i in range(25, 30)], dtype=np.int32)
-            cv2.polylines(canvas, [leb_pts], False, color_azul_oscuro, 3, cv2.LINE_AA)
-            cv2.polylines(canvas, [reb_pts], False, color_azul_oscuro, 3, cv2.LINE_AA)
+            cv2.polylines(canvas, [leb_pts], False, color_azul_oscuro, 4, cv2.LINE_AA)
+            cv2.polylines(canvas, [reb_pts], False, color_azul_oscuro, 4, cv2.LINE_AA)
 
-            # Ojos estilizados
-            for ec in [left_eye_center, right_eye_center]:
-                cv2.circle(canvas, ec, 5, color_azul_oscuro, -1, cv2.LINE_AA)
-                cv2.circle(canvas, (ec[0] - 1, ec[1] - 1), 2, color_blanco, -1, cv2.LINE_AA)
-
-            # Nariz (anclaje central)
+            # Nariz sutil (pequeño anclaje)
             cv2.circle(canvas, nose_pt, 3, color_celeste, -1, cv2.LINE_AA)
 
-            # Labios (Gesticulación oral y rasgos no manuales)
+            # Boca expresiva: ÚNICAMENTE el contorno exterior de los labios en línea continua y gruesa
             lip_pts = np.array([[int(face[i][0] * w), int(face[i][1] * h)] for i in range(20)], dtype=np.int32)
-            cv2.polylines(canvas, [lip_pts], True, color_azul_oscuro, 2, cv2.LINE_AA)
-            cv2.polylines(canvas, [lip_pts], True, color_celeste, 1, cv2.LINE_AA)
+            # Relleno suave si los labios se abren para hablar / sonreír
+            cv2.fillPoly(canvas, [lip_pts], color_boca_relleno, cv2.LINE_AA)
+            cv2.polylines(canvas, [lip_pts], True, color_azul_oscuro, 4, cv2.LINE_AA)
 
-        # 3. Manos de Alta Fidelidad (21 puntos por mano)
+        # 3. Manos Animadas Tipo Guante (Líneas gruesas celestes + articulaciones blancas con borde azul)
         HAND_CONNECTIONS = [
             (0, 1), (1, 2), (2, 3), (3, 4),        # Pulgar
             (0, 5), (5, 6), (6, 7), (7, 8),        # Índice
@@ -233,18 +283,17 @@ class LSPVisionService:
             for hand_key in ["left_hand", "right_hand"]:
                 hand = landmarks.get(hand_key)
                 if hand is not None and not np.all(hand == 0.0) and len(hand) == 21:
-                    # Huesos / Conexiones
+                    # Trazo de dedos y palma en celeste escolar con grosor pedagógico 5
                     for s_idx, e_idx in HAND_CONNECTIONS:
                         p1 = (int(hand[s_idx][0] * w), int(hand[s_idx][1] * h))
                         p2 = (int(hand[e_idx][0] * w), int(hand[e_idx][1] * h))
-                        cv2.line(canvas, p1, p2, color_azul_oscuro, 4, cv2.LINE_AA)
-                        cv2.line(canvas, p1, p2, color_blanco, 2, cv2.LINE_AA)
+                        cv2.line(canvas, p1, p2, color_celeste, 5, cv2.LINE_AA)
 
-                    # Nudillos y Articulaciones
+                    # Articulaciones (nudillos): Círculos blancos de radio 6 con borde azul (efecto guante animado)
                     for pt in hand:
                         cpt = (int(pt[0] * w), int(pt[1] * h))
-                        cv2.circle(canvas, cpt, 4, color_celeste, -1, cv2.LINE_AA)
-                        cv2.circle(canvas, cpt, 1, color_blanco, -1, cv2.LINE_AA)
+                        cv2.circle(canvas, cpt, 6, color_blanco, -1, cv2.LINE_AA)
+                        cv2.circle(canvas, cpt, 6, color_azul_oscuro, 2, cv2.LINE_AA)
 
         return canvas
 

@@ -642,7 +642,7 @@ class LSPUIController:
 
     def load_categories_to_dropdown(self):
         categories = self.data_manager.get_categories()
-        self.category_dropdown.options = [ft.DropdownOption(key=cat, text=cat.upper()) for cat in categories]
+        self.category_dropdown.options = [ft.dropdown.Option(text=cat.upper(), key=cat) for cat in categories]
         if self.selected_category and self.selected_category in categories:
             self.category_dropdown.value = self.selected_category
         elif categories:
@@ -1189,7 +1189,7 @@ class LSPUIController:
 
         cat_list = sorted(list(categories))
         self.test_category_dropdown.options = [
-            ft.DropdownOption(key=c, text=f"Categoría: {c.upper()}") for c in cat_list
+            ft.dropdown.Option(text=f"Categoría: {c.upper()}", key=c) for c in cat_list
         ]
         
         if cat_list and (not self.test_category_dropdown.value or self.test_category_dropdown.value not in cat_list):
@@ -1823,7 +1823,7 @@ class LSPUIController:
 
                 def _ui_populate():
                     self.cloud_category_dropdown.options = [
-                        ft.dropdown.Option(c.upper(), key=c) for c in all_cats
+                        ft.dropdown.Option(text=c.upper(), key=c) for c in all_cats
                     ]
                     self.cloud_category_dropdown.value = current
                     update_ui_safely(self.cloud_category_dropdown)

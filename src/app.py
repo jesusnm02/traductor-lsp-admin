@@ -34,15 +34,15 @@ def main(page: ft.Page):
     page.padding = ft.Padding(16, 12, 16, 12)
     page.scroll = ft.ScrollMode.AUTO
     
-    # Configuración de ventana centrada en el escritorio (solucion_interfaz_avatar_escritorio.md)
-    page.window_width = 1280
-    page.window_height = 840
+    # Configuración de ventana centrada en el escritorio (solucion_avatar_didactico_v4.md)
+    page.window_width = 1200
+    page.window_height = 800
     page.window_resizable = False
     if hasattr(page, "window") and page.window:
         try:
-            page.window.width = 1280
-            page.window.height = 840
-            page.window.resizable = False
+            page.window.width = 1200
+            page.window.height = 800
+            page.window_resizable = False
             page.window.center()
         except Exception:
             pass

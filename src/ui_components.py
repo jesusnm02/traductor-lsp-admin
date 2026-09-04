@@ -1730,10 +1730,10 @@ class LSPUIController:
         buffer_frames = []
         last_rendered_frame = [None]
 
-        # Visor de OpenCV en formato adaptado al lienzo pedagógico 600x450
+        # Visor de OpenCV en formato adaptado al lienzo pedagógico 650x450
         img_visor = ft.Image(
             src=EMPTY_PIXEL_DATA,
-            width=580,
+            width=620,
             height=370,
             fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain",
             border_radius=8
@@ -1749,7 +1749,7 @@ class LSPUIController:
             icon=ft.Icons.CAMERA_ALT,
             bgcolor="#0284C7",
             color=ft.Colors.WHITE,
-            height=38
+            height=40
         )
 
         # Botón 2: Grabar GIF/Video (conmutador interactivo Grabar / Detener)
@@ -1758,7 +1758,7 @@ class LSPUIController:
             icon=ft.Icons.RADIO_BUTTON_CHECKED,
             bgcolor="#EF4444",
             color=ft.Colors.WHITE,
-            height=38
+            height=40
         )
 
         # Botón 3: Cancelar / Cerrar
@@ -1767,10 +1767,10 @@ class LSPUIController:
             icon=ft.Icons.CLOSE,
             bgcolor="#64748B",
             color=ft.Colors.WHITE,
-            height=38
+            height=40
         )
 
-        # AlertDialog espacioso (600x450) con distribución simétrica de los 3 botones
+        # AlertDialog espacioso (650x450) con distribución simétrica de los 3 botones
         recorder_dialog = ft.AlertDialog(
             modal=True,
             title=ft.Row([
@@ -1790,7 +1790,7 @@ class LSPUIController:
                 content=ft.Column([
                     ft.Container(
                         content=img_visor,
-                        width=580,
+                        width=620,
                         height=370,
                         bgcolor="#F4F8FA",
                         border=ft.Border.all(1, COLOR_BORDER),
@@ -1800,19 +1800,21 @@ class LSPUIController:
                     progress_compile,
                     ft.Row([lbl_modal_status, lbl_modal_counter], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 ], spacing=6, tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                width=600,
+                width=650,
                 height=450,
                 border_radius=12,
             ),
             actions=[
-                ft.Row(
-                    controls=[
-                        btn_take_snapshot,
-                        btn_record_toggle,
-                        btn_close_dialog
-                    ],
-                    alignment=ft.MainAxisAlignment.SPACE_EVENLY,
-                    expand=True
+                ft.Container(
+                    content=ft.Row(
+                        controls=[
+                            btn_take_snapshot,
+                            btn_record_toggle,
+                            btn_close_dialog
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_EVENLY,
+                    ),
+                    width=620
                 )
             ],
             actions_alignment=ft.MainAxisAlignment.CENTER,
@@ -1973,57 +1975,63 @@ class LSPUIController:
                 _ui_cam_ready()
 
             while modal_running.is_set():
-                ret, frame = cap.read()
-                if not ret or frame is None:
-                    time.sleep(0.03)
-                    continue
+                try:
+                    ret, frame = cap.read()
+                    if not ret or frame is None:
+                        time.sleep(0.03)
+                        continue
 
-                frame = cv2.flip(frame, 1)
-                h, w, _ = frame.shape
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frame = cv2.flip(frame, 1)
+                    h, w, _ = frame.shape
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                landmarks = None
-                holistic_res = None
-                if hasattr(self.vision_service, "normalizer") and self.vision_service.normalizer:
-                    try:
-                        landmarks = self.vision_service.normalizer.extract_landmarks(frame_rgb)
-                        holistic_res = getattr(self.vision_service.normalizer, 'last_results', None)
-                    except Exception:
-                        landmarks = None
-
-                # Renderizar avatar sobre fondo blanco-celeste escolar #F4F8FA
-                avatar_frame = self.vision_service.render_privacy_avatar(
-                    w, h, landmarks=landmarks, holistic_results=holistic_res
-                )
-                last_rendered_frame[0] = avatar_frame.copy()
-
-                display_frame = avatar_frame.copy()
-                if is_recording.is_set():
-                    buffer_frames.append(avatar_frame.copy())
-                    cnt = len(buffer_frames)
-                    # Distintivo visual de grabación activa en la pantalla del visor
-                    cv2.circle(display_frame, (30, 30), 10, (0, 0, 220), -1)
-                    cv2.putText(display_frame, f"REC {cnt}", (48, 36),
-                                cv2.FONT_HERSHEY_DUPLEX, 0.55, (0, 0, 220), 1, cv2.LINE_AA)
-
-                    if cnt % 4 == 0:
-                        lbl_modal_counter.value = f"{cnt} frames grabados"
+                    landmarks = None
+                    holistic_res = None
+                    if hasattr(self.vision_service, "normalizer") and self.vision_service.normalizer:
                         try:
-                            lbl_modal_counter.update()
+                            landmarks = self.vision_service.normalizer.extract_landmarks(frame_rgb)
+                            holistic_res = getattr(self.vision_service.normalizer, 'last_results', None)
+                        except Exception:
+                            landmarks = None
+
+                    # Renderizar avatar sobre fondo blanco-celeste escolar #F4F8FA
+                    avatar_frame = self.vision_service.render_privacy_avatar(
+                        w, h, landmarks=landmarks, holistic_results=holistic_res
+                    )
+                    last_rendered_frame[0] = avatar_frame.copy()
+
+                    display_frame = avatar_frame.copy()
+                    if is_recording.is_set():
+                        buffer_frames.append(avatar_frame.copy())
+                        cnt = len(buffer_frames)
+                        # Distintivo visual de grabación activa en la pantalla del visor
+                        cv2.circle(display_frame, (30, 30), 10, (0, 0, 220), -1)
+                        cv2.putText(display_frame, f"REC {cnt}", (48, 36),
+                                    cv2.FONT_HERSHEY_DUPLEX, 0.55, (0, 0, 220), 1, cv2.LINE_AA)
+
+                        if cnt % 4 == 0:
+                            lbl_modal_counter.value = f"{cnt} frames grabados"
+                            try:
+                                lbl_modal_counter.update()
+                            except Exception:
+                                pass
+
+                    # Actualización asíncrona directa y ultra-segura del visor
+                    ret_enc, enc_buf = cv2.imencode(".jpg", display_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                    if ret_enc:
+                        b64_str = base64.b64encode(enc_buf).decode("utf-8")
+                        img_visor.src_base64 = b64_str
+                        img_visor.src = f"data:image/jpeg;base64,{b64_str}"
+                        try:
+                            img_visor.update()
                         except Exception:
                             pass
 
-                # Actualización asíncrona directa y fluida del visor sin inundar colas de hilos
-                ret_enc, enc_buf = cv2.imencode(".jpg", display_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
-                if ret_enc:
-                    b64_str = base64.b64encode(enc_buf).decode("utf-8")
-                    img_visor.src_base64 = b64_str
-                    try:
-                        img_visor.update()
-                    except Exception:
-                        pass
-
-                time.sleep(0.033)
+                    time.sleep(0.04)
+                except Exception as ex:
+                    print(f"[AVATAR CAM] Error en bucle de captura: {ex}")
+                    time.sleep(0.03)
+                    continue
 
             cap.release()
 
@@ -2047,13 +2055,21 @@ class LSPUIController:
             filename = os.path.basename(local_path)
             size_kb = os.path.getsize(local_path) / 1024.0
 
+            ext = os.path.splitext(local_path)[1].lower().replace('.', '')
+            mime = "image/gif" if ext == "gif" else ("image/jpeg" if ext in ["jpg", "jpeg"] else "image/png")
+            data_uri = f"data:{mime};base64,{b64_data}"
+
             img_preview = ft.Image(
-                src_base64=b64_data,
+                src=data_uri,
                 width=440,
                 height=320,
                 fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain",
                 border_radius=8
             )
+            try:
+                img_preview.src_base64 = b64_data
+            except Exception:
+                pass
 
             def _close_preview(e=None):
                 preview_dialog.open = False

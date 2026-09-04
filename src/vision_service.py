@@ -142,158 +142,433 @@ class LSPVisionService:
 
     def render_privacy_avatar(self, image_width: int, image_height: int, landmarks: dict = None, holistic_results=None) -> np.ndarray:
         """
-        Genera un lienzo limpio (#F4F8FA) y dibuja un avatar pedagógico infantil (caricatura amigable)
-        basado en los landmarks de pose, rostro y manos.
-        Descarta completamente el feed RGB real y la malla fría de 468 puntos para evitar confusión
-        en niños con discapacidad.
+        Genera un lienzo limpio (#F4F8FA) y dibuja un personaje de caricatura infantil amigable inspirado
+        en Avatar.png: rostro en tono piel cálido (#FCE2C6), cabello estilizado, ojos grandes azul marino
+        con brillo en la esquina superior derecha, cejas dinámicas, boca con apertura bucal en tiempo real,
+        camiseta sólida negra con mangas cortas y antebrazos de color piel, y manos tipo guante grueso
+        en celeste escolar (#4A90E2, grosor 12) con articulaciones blancas de 8 px.
+        Descarta por completo la malla cibernética fría de MediaPipe para evitar fatiga en niños.
+        Si no hay detección activa, proyecta un avatar estático amigable por defecto en lugar de una pantalla negra.
         """
-        w, h = image_width, image_height
+        w, h = max(320, image_width), max(240, image_height)
         canvas = np.full((h, w, 3), [250, 248, 244], dtype=np.uint8)
 
-        # Si no se pasó landmarks directamente pero se dispone de holistic_results, reconstruir
-        if (landmarks is None or not any(k in landmarks for k in ["pose", "face", "left_hand", "right_hand"])) and holistic_results is not None:
-            try:
-                lh = [[lm.x, lm.y, lm.z] for lm in holistic_results.left_hand_landmarks.landmark] if holistic_results.left_hand_landmarks else [[0.0, 0.0, 0.0]] * 21
-                rh = [[lm.x, lm.y, lm.z] for lm in holistic_results.right_hand_landmarks.landmark] if holistic_results.right_hand_landmarks else [[0.0, 0.0, 0.0]] * 21
-                pose = []
-                if holistic_results.pose_landmarks:
-                    for idx in [11, 12, 13, 14, 15, 16]:
-                        lm = holistic_results.pose_landmarks.landmark[idx]
-                        pose.append([lm.x, lm.y, lm.z])
-                else:
-                    pose = [[0.0, 0.0, 0.0]] * 6
-                face = []
-                if holistic_results.face_landmarks:
-                    face_indices = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146,
-                                    70, 63, 105, 66, 107, 300, 293, 334, 296, 336, 33, 133, 159, 362, 263, 386, 4]
-                    for idx in face_indices:
-                        lm = holistic_results.face_landmarks.landmark[idx]
-                        face.append([lm.x, lm.y, lm.z])
-                else:
-                    face = [[0.0, 0.0, 0.0]] * 37
-                landmarks = {
-                    "left_hand": np.array(lh, dtype=np.float32),
-                    "right_hand": np.array(rh, dtype=np.float32),
-                    "pose": np.array(pose, dtype=np.float32),
-                    "face": np.array(face, dtype=np.float32),
-                }
-            except Exception:
-                pass
-
-        if landmarks is None:
-            return canvas
-
-        color_celeste = (226, 144, 74)   # #4A90E2 en BGR (celeste escolar)
-        color_azul_oscuro = (93, 54, 26) # #1A365D en BGR (azul institucional)
+        # Paleta pedagógica inclusiva (Estilo Caricatura Avatar.png)
+        color_piel = (198, 226, 252)         # #FCE2C6 en BGR (tono piel cálido)
+        color_piel_borde = (165, 195, 230)   # Borde suave para definición anatómica
+        color_cabello = (20, 24, 36)         # Marrón oscuro / negro suave
+        color_camiseta = (27, 24, 24)        # #18181B en BGR (camiseta negra sólida)
+        color_celeste = (226, 144, 74)       # #4A90E2 en BGR (celeste escolar pedagógico)
+        color_azul_marino = (93, 54, 26)     # #1A365D en BGR (azul marino institucional)
         color_blanco = (255, 255, 255)
-        color_mejillas = (215, 215, 255) # Rosa suave para mejillas animadas
-        color_boca_relleno = (190, 140, 245)
+        color_rojo_labios = (92, 92, 226)    # #E25C5C en BGR (rojo amigable para labios)
+        color_boca_abierta = (25, 20, 30)    # Cavidad bucal oscura en gesticulación
+        color_mejillas = (195, 185, 245)     # Rosa suave para coloretes pedagógicos
 
         # Distintivo superior de Privacidad pedagógica
         cv2.putText(canvas, "AVATAR DIDACTICO DE PRIVACIDAD", (16, 26),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.45, color_azul_oscuro, 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_DUPLEX, 0.45, color_azul_marino, 1, cv2.LINE_AA)
 
-        # 1. Torso y Brazos Simplificados (Línea de hombros redondeada en celeste escolar)
-        pose = landmarks.get("pose") if landmarks else None
-        if pose is not None and not np.all(pose == 0.0) and len(pose) >= 6:
-            ls = (int(pose[0][0] * w), int(pose[0][1] * h))
-            rs = (int(pose[1][0] * w), int(pose[1][1] * h))
-            le = (int(pose[2][0] * w), int(pose[2][1] * h))
-            re = (int(pose[3][0] * w), int(pose[3][1] * h))
-            lw = (int(pose[4][0] * w), int(pose[4][1] * h))
-            rw = (int(pose[5][0] * w), int(pose[5][1] * h))
-            neck = ((ls[0] + rs[0]) // 2, (ls[1] + rs[1]) // 2)
-
-            sh_dist = int(np.linalg.norm(np.array(ls) - np.array(rs)))
-            torso_bottom = (neck[0], int(neck[1] + max(50, sh_dist * 0.85)))
-
-            # Línea de hombros simple y redondeada en celeste escolar para estabilidad visual
-            cv2.line(canvas, ls, rs, color_celeste, 7, cv2.LINE_AA)
-            cv2.circle(canvas, ls, 5, color_celeste, -1, cv2.LINE_AA)
-            cv2.circle(canvas, rs, 5, color_celeste, -1, cv2.LINE_AA)
-            cv2.line(canvas, neck, torso_bottom, color_celeste, 6, cv2.LINE_AA)
-
-            # Brazos redondeados en celeste escolar
-            for p1, p2 in [(ls, le), (le, lw), (rs, re), (re, rw)]:
-                cv2.line(canvas, p1, p2, color_celeste, 5, cv2.LINE_AA)
-
-            # Articulaciones de codos y hombros (círculos blancos con borde azul)
-            for pt in [ls, rs, le, re]:
-                cv2.circle(canvas, pt, 6, color_blanco, -1, cv2.LINE_AA)
-                cv2.circle(canvas, pt, 6, color_azul_oscuro, 2, cv2.LINE_AA)
-
-        # 2. Cara Simplificada Tipo Caricatura Infantil (Sin malla geométrica fría)
-        face = landmarks.get("face") if landmarks else None
-        if face is not None and not np.all(face == 0.0) and len(face) == 37:
-            nose_pt = (int(face[36][0] * w), int(face[36][1] * h))
-            left_eye_center = (int(np.mean(face[30:33, 0]) * w), int(np.mean(face[30:33, 1]) * h))
-            right_eye_center = (int(np.mean(face[33:36, 0]) * w), int(np.mean(face[33:36, 1]) * h))
-            eye_dist = int(np.linalg.norm(np.array(left_eye_center) - np.array(right_eye_center)))
-            if eye_dist < 10:
-                eye_dist = 40
-
-            head_center = (nose_pt[0], nose_pt[1] - max(5, int(eye_dist * 0.15)))
-            head_rx = max(40, int(eye_dist * 1.35))
-            head_ry = max(50, int(eye_dist * 1.65))
-
-            # Fondo suave y redondeado de cabeza tipo dibujo animado
-            cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, (240, 246, 252), -1, cv2.LINE_AA)
-            cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, color_celeste, 2, cv2.LINE_AA)
-
-            # Mejillas sonrosadas pedagógicas
-            blush_r = max(6, int(eye_dist * 0.18))
-            blush_left = (int(left_eye_center[0] - eye_dist * 0.1), int(left_eye_center[1] + eye_dist * 0.35))
-            blush_right = (int(right_eye_center[0] + eye_dist * 0.1), int(right_eye_center[1] + eye_dist * 0.35))
-            cv2.circle(canvas, blush_left, blush_r, color_mejillas, -1, cv2.LINE_AA)
-            cv2.circle(canvas, blush_right, blush_r, color_mejillas, -1, cv2.LINE_AA)
-
-            # Ojos de caricatura: Dos círculos grandes y expresivos en azul oscuro con brillo blanco
-            eye_radius = max(8, min(14, int(eye_dist * 0.22)))
-            for ec in [left_eye_center, right_eye_center]:
-                cv2.circle(canvas, ec, eye_radius, color_azul_oscuro, -1, cv2.LINE_AA)
-                # Reflejo / brillo blanco en la pupila para aspecto vivo y amigable
-                shine_r = max(2, eye_radius // 3)
-                cv2.circle(canvas, (ec[0] - eye_radius // 3, ec[1] - eye_radius // 3), shine_r, color_blanco, -1, cv2.LINE_AA)
-
-            # Cejas amigables: Dos arcos gruesos y expresivos sobre los ojos
-            leb_pts = np.array([[int(face[i][0] * w), int(face[i][1] * h)] for i in range(20, 25)], dtype=np.int32)
-            reb_pts = np.array([[int(face[i][0] * w), int(face[i][1] * h)] for i in range(25, 30)], dtype=np.int32)
-            cv2.polylines(canvas, [leb_pts], False, color_azul_oscuro, 4, cv2.LINE_AA)
-            cv2.polylines(canvas, [reb_pts], False, color_azul_oscuro, 4, cv2.LINE_AA)
-
-            # Nariz sutil (pequeño anclaje)
-            cv2.circle(canvas, nose_pt, 3, color_celeste, -1, cv2.LINE_AA)
-
-            # Boca expresiva: ÚNICAMENTE el contorno exterior de los labios en línea continua y gruesa
-            lip_pts = np.array([[int(face[i][0] * w), int(face[i][1] * h)] for i in range(20)], dtype=np.int32)
-            # Relleno suave si los labios se abren para hablar / sonreír
-            cv2.fillPoly(canvas, [lip_pts], color_boca_relleno, cv2.LINE_AA)
-            cv2.polylines(canvas, [lip_pts], True, color_azul_oscuro, 4, cv2.LINE_AA)
-
-        # 3. Manos Animadas Tipo Guante (Líneas gruesas celestes + articulaciones blancas con borde azul)
-        HAND_CONNECTIONS = [
-            (0, 1), (1, 2), (2, 3), (3, 4),        # Pulgar
-            (0, 5), (5, 6), (6, 7), (7, 8),        # Índice
-            (5, 9), (9, 10), (10, 11), (11, 12),   # Medio
-            (9, 13), (13, 14), (14, 15), (15, 16), # Anular
-            (13, 17), (17, 18), (18, 19), (19, 20),# Meñique
-            (0, 17)                                # Palma
+        FINGER_CONNECTIONS = [
+            (1, 2), (2, 3), (3, 4),        # Pulgar
+            (5, 6), (6, 7), (7, 8),        # Índice
+            (9, 10), (10, 11), (11, 12),   # Medio
+            (13, 14), (14, 15), (15, 16), # Anular
+            (17, 18), (18, 19), (19, 20)  # Meñique
         ]
-        if landmarks:
-            for hand_key in ["left_hand", "right_hand"]:
-                hand = landmarks.get(hand_key)
-                if hand is not None and not np.all(hand == 0.0) and len(hand) == 21:
-                    # Trazo de dedos y palma en celeste escolar con grosor pedagógico 5
-                    for s_idx, e_idx in HAND_CONNECTIONS:
-                        p1 = (int(hand[s_idx][0] * w), int(hand[s_idx][1] * h))
-                        p2 = (int(hand[e_idx][0] * w), int(hand[e_idx][1] * h))
-                        cv2.line(canvas, p1, p2, color_celeste, 5, cv2.LINE_AA)
+        PALM_INDICES = [0, 1, 2, 5, 9, 13, 17]
 
-                    # Articulaciones (nudillos): Círculos blancos de radio 6 con borde azul (efecto guante animado)
-                    for pt in hand:
-                        cpt = (int(pt[0] * w), int(pt[1] * h))
-                        cv2.circle(canvas, cpt, 6, color_blanco, -1, cv2.LINE_AA)
-                        cv2.circle(canvas, cpt, 6, color_azul_oscuro, 2, cv2.LINE_AA)
+        try:
+            # Reconstruir landmarks desde holistic_results si no se suministró el diccionario
+            if (landmarks is None or not any(k in landmarks for k in ["pose", "face", "left_hand", "right_hand"])) and holistic_results is not None:
+                try:
+                    lh = [[lm.x, lm.y, lm.z] for lm in holistic_results.left_hand_landmarks.landmark] if holistic_results.left_hand_landmarks else [[0.0, 0.0, 0.0]] * 21
+                    rh = [[lm.x, lm.y, lm.z] for lm in holistic_results.right_hand_landmarks.landmark] if holistic_results.right_hand_landmarks else [[0.0, 0.0, 0.0]] * 21
+                    pose = []
+                    if holistic_results.pose_landmarks:
+                        for idx in [11, 12, 13, 14, 15, 16]:
+                            lm = holistic_results.pose_landmarks.landmark[idx]
+                            pose.append([lm.x, lm.y, lm.z])
+                    else:
+                        pose = [[0.0, 0.0, 0.0]] * 6
+                    face = []
+                    if holistic_results.face_landmarks:
+                        face_indices = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146,
+                                        70, 63, 105, 66, 107, 300, 293, 334, 296, 336, 33, 133, 159, 362, 263, 386, 4]
+                        for idx in face_indices:
+                            lm = holistic_results.face_landmarks.landmark[idx]
+                            face.append([lm.x, lm.y, lm.z])
+                    else:
+                        face = [[0.0, 0.0, 0.0]] * 37
+                    landmarks = {
+                        "left_hand": np.array(lh, dtype=np.float32),
+                        "right_hand": np.array(rh, dtype=np.float32),
+                        "pose": np.array(pose, dtype=np.float32),
+                        "face": np.array(face, dtype=np.float32),
+                    }
+                except Exception:
+                    landmarks = None
+
+            hlm = holistic_results.face_landmarks.landmark if (holistic_results and getattr(holistic_results, "face_landmarks", None)) else None
+            has_pose = bool(landmarks and landmarks.get("pose") is not None and not np.all(landmarks["pose"] == 0.0) and len(landmarks["pose"]) >= 6)
+            has_face = bool(hlm is not None or (landmarks and landmarks.get("face") is not None and not np.all(landmarks["face"] == 0.0) and len(landmarks["face"]) == 37))
+
+            # =========================================================================
+            # MODO 1: AVATAR ESTÁTICO AMIGABLE (PREVENCIÓN DEFINITIVA DE PANTALLA NEGRA)
+            # =========================================================================
+            if not has_pose and not has_face:
+                cx = w // 2
+                cy = int(h * 0.36)
+                eye_dist = max(38, int(w * 0.08))
+                head_rx = int(eye_dist * 1.35)
+                head_ry = int(eye_dist * 1.70)
+                head_center = (cx, cy)
+                sh_dist = int(w * 0.36)
+
+                # 1. Torso y Camiseta Negra con cuello en V sutil (Avatar.png)
+                ls_def = (cx - sh_dist // 2, cy + int(head_ry * 1.35))
+                rs_def = (cx + sh_dist // 2, cy + int(head_ry * 1.35))
+                shirt_poly = np.array([
+                    [cx - 24, cy + head_ry + 10],
+                    [ls_def[0] - 12, ls_def[1]],
+                    [ls_def[0] - 35, h],
+                    [rs_def[0] + 35, h],
+                    [rs_def[0] + 12, rs_def[1]],
+                    [cx + 24, cy + head_ry + 10]
+                ], dtype=np.int32)
+                cv2.fillPoly(canvas, [shirt_poly], color_camiseta, cv2.LINE_AA)
+
+                # Cuello en V
+                v_neck = np.array([
+                    [cx - 24, cy + head_ry + 10],
+                    [cx, cy + head_ry + 26],
+                    [cx + 24, cy + head_ry + 10]
+                ], dtype=np.int32)
+                cv2.fillPoly(canvas, [v_neck], color_piel, cv2.LINE_AA)
+                cv2.polylines(canvas, [v_neck], False, (50, 45, 45), 2, cv2.LINE_AA)
+
+                # Brazos y Antebrazos en tono piel
+                le_def = (ls_def[0] - 25, int(h * 0.74))
+                re_def = (rs_def[0] + 25, int(h * 0.74))
+                lw_def = (cx - 70, int(h * 0.88))
+                rw_def = (cx + 70, int(h * 0.88))
+                # Mangas cortas
+                sleeve_l = (int(ls_def[0] + 0.45 * (le_def[0] - ls_def[0])), int(ls_def[1] + 0.45 * (le_def[1] - ls_def[1])))
+                sleeve_r = (int(rs_def[0] + 0.45 * (re_def[0] - rs_def[0])), int(rs_def[1] + 0.45 * (re_def[1] - rs_def[1])))
+                cv2.line(canvas, ls_def, sleeve_l, color_camiseta, 18, cv2.LINE_AA)
+                cv2.line(canvas, rs_def, sleeve_r, color_camiseta, 18, cv2.LINE_AA)
+                # Antebrazos en color piel
+                cv2.line(canvas, sleeve_l, lw_def, color_piel, 14, cv2.LINE_AA)
+                cv2.line(canvas, sleeve_l, lw_def, color_piel_borde, 2, cv2.LINE_AA)
+                cv2.line(canvas, sleeve_r, rw_def, color_piel, 14, cv2.LINE_AA)
+                cv2.line(canvas, sleeve_r, rw_def, color_piel_borde, 2, cv2.LINE_AA)
+
+                # Manos tipo guante grueso en descanso
+                for wpt in [lw_def, rw_def]:
+                    cv2.circle(canvas, wpt, 18, color_celeste, -1, cv2.LINE_AA)
+                    cv2.circle(canvas, wpt, 10, color_blanco, -1, cv2.LINE_AA)
+                    cv2.circle(canvas, wpt, 10, color_celeste, 2, cv2.LINE_AA)
+
+                # 2. Cuello
+                neck_pts = np.array([
+                    [cx - 20, cy + int(head_ry * 0.65)],
+                    [cx + 20, cy + int(head_ry * 0.65)],
+                    [cx + 28, cy + head_ry + 14],
+                    [cx - 28, cy + head_ry + 14]
+                ], dtype=np.int32)
+                cv2.fillPoly(canvas, [neck_pts], color_piel, cv2.LINE_AA)
+
+                # 3. Orejas y Cabeza de Color Piel (#FCE2C6)
+                cv2.circle(canvas, (cx - head_rx + 2, cy + 2), 12, color_piel, -1, cv2.LINE_AA)
+                cv2.circle(canvas, (cx - head_rx + 2, cy + 2), 12, color_piel_borde, 2, cv2.LINE_AA)
+                cv2.circle(canvas, (cx + head_rx - 2, cy + 2), 12, color_piel, -1, cv2.LINE_AA)
+                cv2.circle(canvas, (cx + head_rx - 2, cy + 2), 12, color_piel_borde, 2, cv2.LINE_AA)
+
+                cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, color_piel, -1, cv2.LINE_AA)
+                cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, color_piel_borde, 2, cv2.LINE_AA)
+
+                # 4. Cabello Estilizado
+                hair_pts = [[cx - head_rx - 4, cy - int(head_ry * 0.08)]]
+                for deg in range(195, 350, 15):
+                    rad = np.radians(deg)
+                    hair_pts.append([cx + int((head_rx + 8) * np.cos(rad)), cy + int((head_ry + 12) * np.sin(rad))])
+                hair_pts.append([cx + head_rx + 4, cy - int(head_ry * 0.08)])
+                hair_pts.append([cx + int(head_rx * 0.75), cy - int(head_ry * 0.32)])
+                hair_pts.append([cx + int(head_rx * 0.35), cy - int(head_ry * 0.44)])
+                hair_pts.append([cx - int(head_rx * 0.05), cy - int(head_ry * 0.30)])
+                hair_pts.append([cx - int(head_rx * 0.45), cy - int(head_ry * 0.46)])
+                hair_pts.append([cx - int(head_rx * 0.75), cy - int(head_ry * 0.32)])
+                cv2.fillPoly(canvas, [np.array(hair_pts, dtype=np.int32)], color_cabello, cv2.LINE_AA)
+                cv2.polylines(canvas, [np.array(hair_pts, dtype=np.int32)], True, (15, 18, 28), 2, cv2.LINE_AA)
+
+                # 5. Ojos Grandes Azul Marino con Brillo Blanco
+                lec = (cx - eye_dist // 2, cy - 4)
+                rec = (cx + eye_dist // 2, cy - 4)
+                for ec in [lec, rec]:
+                    cv2.ellipse(canvas, ec, (14, 11), 0, 0, 360, color_blanco, -1, cv2.LINE_AA)
+                    cv2.circle(canvas, ec, 9, color_azul_marino, -1, cv2.LINE_AA)
+                    cv2.circle(canvas, (ec[0] + 3, ec[1] - 3), 3, color_blanco, -1, cv2.LINE_AA)
+
+                # Cejas
+                cv2.line(canvas, (lec[0] - 14, lec[1] - 12), (lec[0] + 12, lec[1] - 14), color_cabello, 5, cv2.LINE_AA)
+                cv2.line(canvas, (rec[0] - 12, rec[1] - 14), (rec[0] + 14, rec[1] - 12), color_cabello, 5, cv2.LINE_AA)
+
+                # Mejillas sonrosadas y Nariz
+                cv2.circle(canvas, (lec[0] - 8, lec[1] + 18), 10, color_mejillas, -1, cv2.LINE_AA)
+                cv2.circle(canvas, (rec[0] + 8, rec[1] + 18), 10, color_mejillas, -1, cv2.LINE_AA)
+                cv2.circle(canvas, (cx, cy + 12), 3, color_piel_borde, -1, cv2.LINE_AA)
+
+                # Sonrisa amigable
+                smile_pts = np.array([
+                    [cx - 20, cy + 28],
+                    [cx - 10, cy + 38],
+                    [cx + 10, cy + 38],
+                    [cx + 20, cy + 28],
+                    [cx + 10, cy + 32],
+                    [cx - 10, cy + 32]
+                ], dtype=np.int32)
+                cv2.fillPoly(canvas, [smile_pts], (175, 164, 253), cv2.LINE_AA)
+                cv2.polylines(canvas, [smile_pts], True, color_rojo_labios, 3, cv2.LINE_AA)
+
+                return canvas
+
+            # =========================================================================
+            # MODO 2: AVATAR DINÁMICO EN TIEMPO REAL (SEGUIMIENTO DEL DOCENTE)
+            # =========================================================================
+
+            # --- A. Torso y Camiseta Escolar (Estilo Avatar.png) ---
+            pose = landmarks.get("pose") if landmarks else None
+
+            if has_pose:
+                ls = (int(pose[0][0] * w), int(pose[0][1] * h))
+                rs = (int(pose[1][0] * w), int(pose[1][1] * h))
+                le = (int(pose[2][0] * w), int(pose[2][1] * h))
+                re = (int(pose[3][0] * w), int(pose[3][1] * h))
+                lw = (int(pose[4][0] * w), int(pose[4][1] * h))
+                rw = (int(pose[5][0] * w), int(pose[5][1] * h))
+                sh_dist = max(50, int(np.linalg.norm(np.array(ls) - np.array(rs))))
+                neck = ((ls[0] + rs[0]) // 2, (ls[1] + rs[1]) // 2)
+            else:
+                sh_dist = int(w * 0.35)
+                cx = w // 2
+                neck = (cx, int(h * 0.52))
+                ls = (cx - sh_dist // 2, int(h * 0.54))
+                rs = (cx + sh_dist // 2, int(h * 0.54))
+                le = (ls[0] - 25, int(h * 0.74))
+                re = (rs[0] + 25, int(h * 0.74))
+                lw = (ls[0] - 10, int(h * 0.88))
+                rw = (rs[0] + 10, int(h * 0.88))
+
+            # Polígono trapezoidal sólido de la camiseta negra
+            neck_hw = max(18, int(sh_dist * 0.16))
+            shirt_poly = np.array([
+                [neck[0] - neck_hw, neck[1] - 8],
+                [ls[0] - 15, ls[1]],
+                [ls[0] - 40, h],
+                [rs[0] + 40, h],
+                [rs[0] + 15, rs[1]],
+                [neck[0] + neck_hw, neck[1] - 8]
+            ], dtype=np.int32)
+            cv2.fillPoly(canvas, [shirt_poly], color_camiseta, cv2.LINE_AA)
+
+            # Cuello en V sutil
+            v_neck = np.array([
+                [neck[0] - neck_hw, neck[1] - 8],
+                [neck[0], neck[1] + int(neck_hw * 0.65)],
+                [neck[0] + neck_hw, neck[1] - 8]
+            ], dtype=np.int32)
+            cv2.fillPoly(canvas, [v_neck], color_piel, cv2.LINE_AA)
+            cv2.polylines(canvas, [v_neck], False, (50, 45, 45), 2, cv2.LINE_AA)
+
+            # Mangas cortas de la camiseta y antebrazos en color piel
+            sleeve_l_end = (int(ls[0] + 0.45 * (le[0] - ls[0])), int(ls[1] + 0.45 * (le[1] - ls[1])))
+            sleeve_r_end = (int(rs[0] + 0.45 * (re[0] - rs[0])), int(rs[1] + 0.45 * (re[1] - rs[1])))
+            cv2.line(canvas, ls, sleeve_l_end, color_camiseta, 18, cv2.LINE_AA)
+            cv2.line(canvas, rs, sleeve_r_end, color_camiseta, 18, cv2.LINE_AA)
+
+            cv2.line(canvas, sleeve_l_end, lw, color_piel, 14, cv2.LINE_AA)
+            cv2.line(canvas, sleeve_l_end, lw, color_piel_borde, 2, cv2.LINE_AA)
+            cv2.line(canvas, sleeve_r_end, rw, color_piel, 14, cv2.LINE_AA)
+            cv2.line(canvas, sleeve_r_end, rw, color_piel_borde, 2, cv2.LINE_AA)
+
+            # --- B. Cuello, Rostro y Cabello (Inspirado en Avatar.png) ---
+            FACEMESH_CONTOUR = [
+                10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378,
+                400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21,
+                54, 103, 67, 109
+            ]
+
+            if hlm is not None:
+                # Contorno facial exacto usando los landmarks de MediaPipe
+                face_pts = np.array([[int(hlm[idx].x * w), int(hlm[idx].y * h)] for idx in FACEMESH_CONTOUR], dtype=np.int32)
+                head_center = (int(np.mean(face_pts[:, 0])), int(np.mean(face_pts[:, 1])))
+                chin_pt = (int(hlm[152].x * w), int(hlm[152].y * h))
+                left_eye_center = (int(hlm[159].x * w), int(hlm[159].y * h))
+                right_eye_center = (int(hlm[386].x * w), int(hlm[386].y * h))
+                eye_dist = max(20, int(np.linalg.norm(np.array(left_eye_center) - np.array(right_eye_center))))
+
+                # Cuello que conecta barbilla a la camiseta
+                neck_pts = np.array([
+                    [head_center[0] - 22, chin_pt[1] - 10],
+                    [head_center[0] + 22, chin_pt[1] - 10],
+                    [neck[0] + neck_hw, neck[1] + 4],
+                    [neck[0] - neck_hw, neck[1] + 4]
+                ], dtype=np.int32)
+                cv2.fillPoly(canvas, [neck_pts], color_piel, cv2.LINE_AA)
+
+                # Rostro relleno en color piel cálido (#FCE2C6)
+                cv2.fillPoly(canvas, [face_pts], color_piel, cv2.LINE_AA)
+                cv2.polylines(canvas, [face_pts], True, color_piel_borde, 2, cv2.LINE_AA)
+
+                # Cabello estilizado coronando la parte superior con volumen
+                HAIR_TOP_INDICES = [234, 127, 162, 21, 54, 103, 67, 109, 10, 338, 297, 332, 284, 251, 389, 356, 454]
+                hair_pts = []
+                for idx in HAIR_TOP_INDICES:
+                    px = int(hlm[idx].x * w)
+                    py = int(hlm[idx].y * h)
+                    # Vector desde centro de cabeza para offset de volumen
+                    vx = px - head_center[0]
+                    vy = py - head_center[1]
+                    norm_v = np.linalg.norm([vx, vy])
+                    if norm_v > 1e-3:
+                        scale = (norm_v + 26) / norm_v
+                        hair_pts.append([int(head_center[0] + vx * scale), int(head_center[1] + vy * scale)])
+                    else:
+                        hair_pts.append([px, py - 26])
+
+                # Conectar la línea inferior del flequillo a través de la frente
+                hair_pts.append([int(hlm[454].x * w), int(hlm[454].y * h)])
+                hair_pts.append([int(hlm[10].x * w), int(hlm[10].y * h + 10)])
+                hair_pts.append([int(hlm[234].x * w), int(hlm[234].y * h)])
+                cv2.fillPoly(canvas, [np.array(hair_pts, dtype=np.int32)], color_cabello, cv2.LINE_AA)
+                cv2.polylines(canvas, [np.array(hair_pts, dtype=np.int32)], True, (15, 18, 28), 2, cv2.LINE_AA)
+
+            else:
+                # Respaldo geométrico de alta precisión con landmarks faciales de 37 puntos
+                face = landmarks.get("face") if landmarks else None
+                nose_pt = (int(face[36][0] * w), int(face[36][1] * h)) if face is not None else (neck[0], neck[1] - int(sh_dist * 0.45))
+                left_eye_center = (int(np.mean(face[30:33, 0]) * w), int(np.mean(face[30:33, 1]) * h)) if face is not None else (nose_pt[0] - 25, nose_pt[1] - 15)
+                right_eye_center = (int(np.mean(face[33:36, 0]) * w), int(np.mean(face[33:36, 1]) * h)) if face is not None else (nose_pt[0] + 25, nose_pt[1] - 15)
+                eye_dist = max(20, int(np.linalg.norm(np.array(left_eye_center) - np.array(right_eye_center))))
+
+                head_center = (nose_pt[0], nose_pt[1] - max(8, int(eye_dist * 0.18)))
+                head_rx = max(44, int(eye_dist * 1.35))
+                head_ry = max(56, int(eye_dist * 1.70))
+
+                # Cuello
+                neck_pts = np.array([
+                    [head_center[0] - 20, head_center[1] + int(head_ry * 0.65)],
+                    [head_center[0] + 20, head_center[1] + int(head_ry * 0.65)],
+                    [neck[0] + neck_hw, neck[1] + 4],
+                    [neck[0] - neck_hw, neck[1] + 4]
+                ], dtype=np.int32)
+                cv2.fillPoly(canvas, [neck_pts], color_piel, cv2.LINE_AA)
+
+                # Orejas
+                ear_r = max(9, int(head_ry * 0.22))
+                cv2.circle(canvas, (head_center[0] - head_rx + 2, head_center[1] + 2), ear_r, color_piel, -1, cv2.LINE_AA)
+                cv2.circle(canvas, (head_center[0] - head_rx + 2, head_center[1] + 2), ear_r, color_piel_borde, 2, cv2.LINE_AA)
+                cv2.circle(canvas, (head_center[0] + head_rx - 2, head_center[1] + 2), ear_r, color_piel, -1, cv2.LINE_AA)
+                cv2.circle(canvas, (head_center[0] + head_rx - 2, head_center[1] + 2), ear_r, color_piel_borde, 2, cv2.LINE_AA)
+
+                # Rostro
+                cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, color_piel, -1, cv2.LINE_AA)
+                cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, color_piel_borde, 2, cv2.LINE_AA)
+
+                # Cabello
+                hair_pts = [[head_center[0] - head_rx - 4, head_center[1] - int(head_ry * 0.08)]]
+                for deg in range(195, 350, 15):
+                    rad = np.radians(deg)
+                    hair_pts.append([head_center[0] + int((head_rx + 8) * np.cos(rad)), head_center[1] + int((head_ry + 12) * np.sin(rad))])
+                hair_pts.append([head_center[0] + head_rx + 4, head_center[1] - int(head_ry * 0.08)])
+                hair_pts.append([head_center[0] + int(head_rx * 0.75), head_center[1] - int(head_ry * 0.32)])
+                hair_pts.append([head_center[0] + int(head_rx * 0.35), head_center[1] - int(head_ry * 0.44)])
+                hair_pts.append([head_center[0] - int(head_rx * 0.05), head_center[1] - int(head_ry * 0.30)])
+                hair_pts.append([head_center[0] - int(head_rx * 0.45), head_center[1] - int(head_ry * 0.46)])
+                hair_pts.append([head_center[0] - int(head_rx * 0.75), head_center[1] - int(head_ry * 0.32)])
+                cv2.fillPoly(canvas, [np.array(hair_pts, dtype=np.int32)], color_cabello, cv2.LINE_AA)
+                cv2.polylines(canvas, [np.array(hair_pts, dtype=np.int32)], True, (15, 18, 28), 2, cv2.LINE_AA)
+
+            # --- C. Animación Facial Dinámica (Cejas, Ojos con Brillo, Boca con Apertura) ---
+
+            # 1. Cejas dinámicas
+            if hlm is not None:
+                leb_idx = [70, 63, 105, 66, 107]
+                reb_idx = [336, 296, 334, 293, 300]
+                leb_pts = np.array([[int(hlm[i].x * w), int(hlm[i].y * h)] for i in leb_idx], dtype=np.int32)
+                reb_pts = np.array([[int(hlm[i].x * w), int(hlm[i].y * h)] for i in reb_idx], dtype=np.int32)
+                cv2.polylines(canvas, [leb_pts], False, (15, 18, 28), 5, cv2.LINE_AA)
+                cv2.polylines(canvas, [reb_pts], False, (15, 18, 28), 5, cv2.LINE_AA)
+            elif landmarks and landmarks.get("face") is not None:
+                face = landmarks["face"]
+                leb_pts = np.array([[int(face[i][0] * w), int(face[i][1] * h)] for i in range(20, 25)], dtype=np.int32)
+                reb_pts = np.array([[int(face[i][0] * w), int(face[i][1] * h)] for i in range(25, 30)], dtype=np.int32)
+                cv2.polylines(canvas, [leb_pts], False, (15, 18, 28), 5, cv2.LINE_AA)
+                cv2.polylines(canvas, [reb_pts], False, (15, 18, 28), 5, cv2.LINE_AA)
+
+            # 2. Ojos grandes azul marino con brillo animado en esquina superior derecha
+            eye_rx = max(11, min(16, int(eye_dist * 0.24)))
+            eye_ry = max(9, min(13, int(eye_dist * 0.19)))
+            pupil_r = max(6, min(10, int(eye_rx * 0.70)))
+            shine_r = max(2, pupil_r // 3)
+            for ec in [left_eye_center, right_eye_center]:
+                cv2.ellipse(canvas, ec, (eye_rx, eye_ry), 0, 0, 360, color_blanco, -1, cv2.LINE_AA)
+                cv2.circle(canvas, ec, pupil_r, color_azul_marino, -1, cv2.LINE_AA)
+                # Brillo blanco en esquina superior derecha
+                cv2.circle(canvas, (ec[0] + pupil_r // 3, ec[1] - pupil_r // 3), shine_r, color_blanco, -1, cv2.LINE_AA)
+
+            # 3. Mejillas sonrosadas pedagógicas
+            blush_r = max(7, int(eye_dist * 0.20))
+            blush_l = (int(left_eye_center[0] - eye_dist * 0.08), int(left_eye_center[1] + eye_dist * 0.36))
+            blush_r_pt = (int(right_eye_center[0] + eye_dist * 0.08), int(right_eye_center[1] + eye_dist * 0.36))
+            cv2.circle(canvas, blush_l, blush_r, color_mejillas, -1, cv2.LINE_AA)
+            cv2.circle(canvas, blush_r_pt, blush_r, color_mejillas, -1, cv2.LINE_AA)
+
+            # 4. Boca dinámica con detección de apertura bucal en tiempo real
+            if hlm is not None:
+                OUTER_LIP_INDICES = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95, 78]
+                outer_lip_pts = np.array([[int(hlm[idx].x * w), int(hlm[idx].y * h)] for idx in OUTER_LIP_INDICES], dtype=np.int32)
+                cv2.fillPoly(canvas, [outer_lip_pts], color_rojo_labios, cv2.LINE_AA)
+                cv2.polylines(canvas, [outer_lip_pts], True, (60, 60, 200), 2, cv2.LINE_AA)
+
+                # Detección de apertura bucal (distancia entre labio superior interno 13 y labio inferior interno 14)
+                pt_13 = np.array([hlm[13].x * w, hlm[13].y * h])
+                pt_14 = np.array([hlm[14].x * w, hlm[14].y * h])
+                lip_open_dist = np.linalg.norm(pt_13 - pt_14)
+
+                if lip_open_dist > 4.5:
+                    INNER_LIP_INDICES = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 415, 310, 311, 312, 13, 82, 81, 80, 191]
+                    inner_lip_pts = np.array([[int(hlm[idx].x * w), int(hlm[idx].y * h)] for idx in INNER_LIP_INDICES], dtype=np.int32)
+                    cv2.fillPoly(canvas, [inner_lip_pts], color_boca_abierta, cv2.LINE_AA)
+            elif landmarks and landmarks.get("face") is not None:
+                face = landmarks["face"]
+                outer_lip_pts = np.array([[int(face[i][0] * w), int(face[i][1] * h)] for i in range(20)], dtype=np.int32)
+                cv2.fillPoly(canvas, [outer_lip_pts], color_rojo_labios, cv2.LINE_AA)
+                cv2.polylines(canvas, [outer_lip_pts], True, (60, 60, 200), 2, cv2.LINE_AA)
+
+            # --- D. Manos Tipo Guante Grueso (Sin "Efecto Palito") ---
+            if landmarks:
+                for hand_key in ["left_hand", "right_hand"]:
+                    hand = landmarks.get(hand_key)
+                    if hand is not None and not np.all(hand == 0.0) and len(hand) == 21:
+                        # 1. Contorno sólido de la base de la palma
+                        palm_pts = np.array([[int(hand[idx][0] * w), int(hand[idx][1] * h)] for idx in PALM_INDICES], dtype=np.int32)
+                        cv2.fillPoly(canvas, [palm_pts], color_celeste, cv2.LINE_AA)
+
+                        # 2. Dedos gruesos de caricatura (grosor 12)
+                        for s_idx, e_idx in FINGER_CONNECTIONS:
+                            p1 = (int(hand[s_idx][0] * w), int(hand[s_idx][1] * h))
+                            p2 = (int(hand[e_idx][0] * w), int(hand[e_idx][1] * h))
+                            cv2.line(canvas, p1, p2, color_celeste, 12, cv2.LINE_AA)
+
+                        # 3. Nudillos redondos blancos con borde celeste en las 21 articulaciones
+                        for pt in hand:
+                            cpt = (int(pt[0] * w), int(pt[1] * h))
+                            cv2.circle(canvas, cpt, 8, color_blanco, -1, cv2.LINE_AA)
+                            cv2.circle(canvas, cpt, 8, color_celeste, 2, cv2.LINE_AA)
+
+        except Exception as ex:
+            print(f"[AVATAR] Error renderizando avatar pedagógico: {ex}")
 
         return canvas
 

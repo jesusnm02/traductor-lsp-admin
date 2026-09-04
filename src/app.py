@@ -34,21 +34,13 @@ def main(page: ft.Page):
     page.padding = ft.Padding(16, 12, 16, 12)
     page.scroll = ft.ScrollMode.AUTO
     
-    # Configuración de ventana centrada en el escritorio (solucion_avatar_didactico_v4.md)
-    page.window_width = 1200
-    page.window_height = 800
-    page.window_resizable = False
+    # Maximización nativa de ventana en Flet (solucion_definitiva_aws_y_comandos_voz.md)
+    page.window_maximized = True
+    page.window_resizable = True
     if hasattr(page, "window") and page.window:
         try:
-            page.window.width = 1200
-            page.window.height = 800
-            page.window_resizable = False
-            page.window.center()
-        except Exception:
-            pass
-    if hasattr(page, "window_center"):
-        try:
-            page.window_center()
+            page.window.maximized = True
+            page.window.resizable = True
         except Exception:
             pass
     page.update()

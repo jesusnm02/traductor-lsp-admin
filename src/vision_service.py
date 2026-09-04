@@ -52,6 +52,7 @@ class LSPVisionService:
         # Modo Avatar de Privacidad (Títere vectorial de-identificado)
         self.privacy_avatar_mode = False
         self.avatar_recording_frames = []
+        self.last_raw_frame = None
 
     def update_params(self, delay: float, frames: int):
         """Permite al docente alterar los parámetros de captura en caliente desde Flet."""
@@ -263,11 +264,11 @@ class LSPVisionService:
                 cv2.line(canvas, sleeve_r, rw_def, color_piel, 14, cv2.LINE_AA)
                 cv2.line(canvas, sleeve_r, rw_def, color_piel_borde, 2, cv2.LINE_AA)
 
-                # Manos tipo guante grueso en descanso
+                # Manos tipo guante en descanso
                 for wpt in [lw_def, rw_def]:
-                    cv2.circle(canvas, wpt, 18, color_celeste, -1, cv2.LINE_AA)
-                    cv2.circle(canvas, wpt, 10, color_blanco, -1, cv2.LINE_AA)
-                    cv2.circle(canvas, wpt, 10, color_celeste, 2, cv2.LINE_AA)
+                    cv2.circle(canvas, wpt, 14, color_celeste, -1, cv2.LINE_AA)
+                    cv2.circle(canvas, wpt, 4, color_blanco, -1, cv2.LINE_AA)
+                    cv2.circle(canvas, wpt, 4, color_celeste, 1, cv2.LINE_AA)
 
                 # 2. Cuello
                 neck_pts = np.array([
@@ -287,19 +288,13 @@ class LSPVisionService:
                 cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, color_piel, -1, cv2.LINE_AA)
                 cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, color_piel_borde, 2, cv2.LINE_AA)
 
-                # 4. Cabello Estilizado
-                hair_pts = [[cx - head_rx - 4, cy - int(head_ry * 0.08)]]
-                for deg in range(195, 350, 15):
-                    rad = np.radians(deg)
-                    hair_pts.append([cx + int((head_rx + 8) * np.cos(rad)), cy + int((head_ry + 12) * np.sin(rad))])
-                hair_pts.append([cx + head_rx + 4, cy - int(head_ry * 0.08)])
-                hair_pts.append([cx + int(head_rx * 0.75), cy - int(head_ry * 0.32)])
-                hair_pts.append([cx + int(head_rx * 0.35), cy - int(head_ry * 0.44)])
-                hair_pts.append([cx - int(head_rx * 0.05), cy - int(head_ry * 0.30)])
-                hair_pts.append([cx - int(head_rx * 0.45), cy - int(head_ry * 0.46)])
-                hair_pts.append([cx - int(head_rx * 0.75), cy - int(head_ry * 0.32)])
-                cv2.fillPoly(canvas, [np.array(hair_pts, dtype=np.int32)], color_cabello, cv2.LINE_AA)
-                cv2.polylines(canvas, [np.array(hair_pts, dtype=np.int32)], True, (15, 18, 28), 2, cv2.LINE_AA)
+                # 4. Cabello de "Palitos" Minimalista Infantil (3 a 5 trazos de caricatura)
+                top_x, top_y = cx, cy - head_ry
+                cv2.line(canvas, (top_x, top_y), (top_x, top_y - 32), (15, 18, 28), 4, cv2.LINE_AA)
+                cv2.line(canvas, (top_x - 12, top_y + 3), (top_x - 24, top_y - 26), (15, 18, 28), 4, cv2.LINE_AA)
+                cv2.line(canvas, (top_x + 12, top_y + 3), (top_x + 24, top_y - 26), (15, 18, 28), 4, cv2.LINE_AA)
+                cv2.line(canvas, (top_x - 24, top_y + 8), (top_x - 40, top_y - 16), (15, 18, 28), 4, cv2.LINE_AA)
+                cv2.line(canvas, (top_x + 24, top_y + 8), (top_x + 40, top_y - 16), (15, 18, 28), 4, cv2.LINE_AA)
 
                 # 5. Ojos Grandes Azul Marino con Brillo Blanco
                 lec = (cx - eye_dist // 2, cy - 4)
@@ -420,28 +415,13 @@ class LSPVisionService:
                 cv2.fillPoly(canvas, [face_pts], color_piel, cv2.LINE_AA)
                 cv2.polylines(canvas, [face_pts], True, color_piel_borde, 2, cv2.LINE_AA)
 
-                # Cabello estilizado coronando la parte superior con volumen
-                HAIR_TOP_INDICES = [234, 127, 162, 21, 54, 103, 67, 109, 10, 338, 297, 332, 284, 251, 389, 356, 454]
-                hair_pts = []
-                for idx in HAIR_TOP_INDICES:
-                    px = int(hlm[idx].x * w)
-                    py = int(hlm[idx].y * h)
-                    # Vector desde centro de cabeza para offset de volumen
-                    vx = px - head_center[0]
-                    vy = py - head_center[1]
-                    norm_v = np.linalg.norm([vx, vy])
-                    if norm_v > 1e-3:
-                        scale = (norm_v + 26) / norm_v
-                        hair_pts.append([int(head_center[0] + vx * scale), int(head_center[1] + vy * scale)])
-                    else:
-                        hair_pts.append([px, py - 26])
-
-                # Conectar la línea inferior del flequillo a través de la frente
-                hair_pts.append([int(hlm[454].x * w), int(hlm[454].y * h)])
-                hair_pts.append([int(hlm[10].x * w), int(hlm[10].y * h + 10)])
-                hair_pts.append([int(hlm[234].x * w), int(hlm[234].y * h)])
-                cv2.fillPoly(canvas, [np.array(hair_pts, dtype=np.int32)], color_cabello, cv2.LINE_AA)
-                cv2.polylines(canvas, [np.array(hair_pts, dtype=np.int32)], True, (15, 18, 28), 2, cv2.LINE_AA)
+                # Cabello de "Palitos" Minimalista Infantil (3 a 5 trazos de caricatura basados en landmark 10)
+                top_x, top_y = int(hlm[10].x * w), int(hlm[10].y * h)
+                cv2.line(canvas, (top_x, top_y), (top_x, top_y - 35), (15, 18, 28), 4, cv2.LINE_AA)
+                cv2.line(canvas, (top_x - 14, top_y + 4), (top_x - 26, top_y - 28), (15, 18, 28), 4, cv2.LINE_AA)
+                cv2.line(canvas, (top_x + 14, top_y + 4), (top_x + 26, top_y - 28), (15, 18, 28), 4, cv2.LINE_AA)
+                cv2.line(canvas, (top_x - 26, top_y + 10), (top_x - 44, top_y - 18), (15, 18, 28), 4, cv2.LINE_AA)
+                cv2.line(canvas, (top_x + 26, top_y + 10), (top_x + 44, top_y - 18), (15, 18, 28), 4, cv2.LINE_AA)
 
             else:
                 # Respaldo geométrico de alta precisión con landmarks faciales de 37 puntos
@@ -475,19 +455,13 @@ class LSPVisionService:
                 cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, color_piel, -1, cv2.LINE_AA)
                 cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, color_piel_borde, 2, cv2.LINE_AA)
 
-                # Cabello
-                hair_pts = [[head_center[0] - head_rx - 4, head_center[1] - int(head_ry * 0.08)]]
-                for deg in range(195, 350, 15):
-                    rad = np.radians(deg)
-                    hair_pts.append([head_center[0] + int((head_rx + 8) * np.cos(rad)), head_center[1] + int((head_ry + 12) * np.sin(rad))])
-                hair_pts.append([head_center[0] + head_rx + 4, head_center[1] - int(head_ry * 0.08)])
-                hair_pts.append([head_center[0] + int(head_rx * 0.75), head_center[1] - int(head_ry * 0.32)])
-                hair_pts.append([head_center[0] + int(head_rx * 0.35), head_center[1] - int(head_ry * 0.44)])
-                hair_pts.append([head_center[0] - int(head_rx * 0.05), head_center[1] - int(head_ry * 0.30)])
-                hair_pts.append([head_center[0] - int(head_rx * 0.45), head_center[1] - int(head_ry * 0.46)])
-                hair_pts.append([head_center[0] - int(head_rx * 0.75), head_center[1] - int(head_ry * 0.32)])
-                cv2.fillPoly(canvas, [np.array(hair_pts, dtype=np.int32)], color_cabello, cv2.LINE_AA)
-                cv2.polylines(canvas, [np.array(hair_pts, dtype=np.int32)], True, (15, 18, 28), 2, cv2.LINE_AA)
+                # Cabello de "Palitos" Minimalista Infantil
+                top_x, top_y = head_center[0], head_center[1] - head_ry
+                cv2.line(canvas, (top_x, top_y), (top_x, top_y - 35), (15, 18, 28), 4, cv2.LINE_AA)
+                cv2.line(canvas, (top_x - 14, top_y + 4), (top_x - 26, top_y - 28), (15, 18, 28), 4, cv2.LINE_AA)
+                cv2.line(canvas, (top_x + 14, top_y + 4), (top_x + 26, top_y - 28), (15, 18, 28), 4, cv2.LINE_AA)
+                cv2.line(canvas, (top_x - 26, top_y + 10), (top_x - 44, top_y - 18), (15, 18, 28), 4, cv2.LINE_AA)
+                cv2.line(canvas, (top_x + 26, top_y + 10), (top_x + 44, top_y - 18), (15, 18, 28), 4, cv2.LINE_AA)
 
             # --- C. Animación Facial Dinámica (Cejas, Ojos con Brillo, Boca con Apertura) ---
 
@@ -497,14 +471,14 @@ class LSPVisionService:
                 reb_idx = [336, 296, 334, 293, 300]
                 leb_pts = np.array([[int(hlm[i].x * w), int(hlm[i].y * h)] for i in leb_idx], dtype=np.int32)
                 reb_pts = np.array([[int(hlm[i].x * w), int(hlm[i].y * h)] for i in reb_idx], dtype=np.int32)
-                cv2.polylines(canvas, [leb_pts], False, (15, 18, 28), 5, cv2.LINE_AA)
-                cv2.polylines(canvas, [reb_pts], False, (15, 18, 28), 5, cv2.LINE_AA)
+                cv2.polylines(canvas, [leb_pts], False, (15, 18, 28), 3, cv2.LINE_AA)
+                cv2.polylines(canvas, [reb_pts], False, (15, 18, 28), 3, cv2.LINE_AA)
             elif landmarks and landmarks.get("face") is not None:
                 face = landmarks["face"]
                 leb_pts = np.array([[int(face[i][0] * w), int(face[i][1] * h)] for i in range(20, 25)], dtype=np.int32)
                 reb_pts = np.array([[int(face[i][0] * w), int(face[i][1] * h)] for i in range(25, 30)], dtype=np.int32)
-                cv2.polylines(canvas, [leb_pts], False, (15, 18, 28), 5, cv2.LINE_AA)
-                cv2.polylines(canvas, [reb_pts], False, (15, 18, 28), 5, cv2.LINE_AA)
+                cv2.polylines(canvas, [leb_pts], False, (15, 18, 28), 3, cv2.LINE_AA)
+                cv2.polylines(canvas, [reb_pts], False, (15, 18, 28), 3, cv2.LINE_AA)
 
             # 2. Ojos grandes azul marino con brillo animado en esquina superior derecha
             eye_rx = max(11, min(16, int(eye_dist * 0.24)))
@@ -546,7 +520,7 @@ class LSPVisionService:
                 cv2.fillPoly(canvas, [outer_lip_pts], color_rojo_labios, cv2.LINE_AA)
                 cv2.polylines(canvas, [outer_lip_pts], True, (60, 60, 200), 2, cv2.LINE_AA)
 
-            # --- D. Manos Tipo Guante Grueso (Sin "Efecto Palito") ---
+            # --- D. Manos Tipo Guante Definidas (Dedos Separados y Legibles) ---
             if landmarks:
                 for hand_key in ["left_hand", "right_hand"]:
                     hand = landmarks.get(hand_key)
@@ -555,17 +529,17 @@ class LSPVisionService:
                         palm_pts = np.array([[int(hand[idx][0] * w), int(hand[idx][1] * h)] for idx in PALM_INDICES], dtype=np.int32)
                         cv2.fillPoly(canvas, [palm_pts], color_celeste, cv2.LINE_AA)
 
-                        # 2. Dedos gruesos de caricatura (grosor 12)
+                        # 2. Dedos definidos de caricatura (grosor 5 px para evitar efecto manopla)
                         for s_idx, e_idx in FINGER_CONNECTIONS:
                             p1 = (int(hand[s_idx][0] * w), int(hand[s_idx][1] * h))
                             p2 = (int(hand[e_idx][0] * w), int(hand[e_idx][1] * h))
-                            cv2.line(canvas, p1, p2, color_celeste, 12, cv2.LINE_AA)
+                            cv2.line(canvas, p1, p2, color_celeste, 5, cv2.LINE_AA)
 
-                        # 3. Nudillos redondos blancos con borde celeste en las 21 articulaciones
+                        # 3. Nudillos pequeños blancos (radio 3 px) con borde celeste de 1 px en las 21 articulaciones
                         for pt in hand:
                             cpt = (int(pt[0] * w), int(pt[1] * h))
-                            cv2.circle(canvas, cpt, 8, color_blanco, -1, cv2.LINE_AA)
-                            cv2.circle(canvas, cpt, 8, color_celeste, 2, cv2.LINE_AA)
+                            cv2.circle(canvas, cpt, 3, color_blanco, -1, cv2.LINE_AA)
+                            cv2.circle(canvas, cpt, 3, color_celeste, 1, cv2.LINE_AA)
 
         except Exception as ex:
             print(f"[AVATAR] Error renderizando avatar pedagógico: {ex}")
@@ -796,6 +770,9 @@ class LSPVisionService:
             now = time.time()
             self.fps = 1.0 / max(1e-5, now - prev_time)
             prev_time = now
+
+            # Guardar último frame para capturas y grabación directa
+            self.last_raw_frame = frame.copy()
 
             # Codificación Base64
             _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])

@@ -7,6 +7,10 @@ import time
 import base64
 import cv2
 import flet as ft
+try:
+    import speech_recognition as sr
+except ImportError:
+    sr = None
 from src.data_manager import LSPDataManager, LSPDatasetManager
 from src.vision_service import LSPVisionService
 from src.model_trainer import ModelTrainer, LSPTrainer
@@ -184,6 +188,41 @@ class LSPUIController:
         # Enlazar control de imagen directo para refresco quirúrgico
         self.vision_service.video_image_control = self.camera_view
 
+    def create_camera_placeholder(self) -> ft.Container:
+        """Crea el componente visual estándar para el estado de cámara desactivada."""
+        return ft.Container(
+            content=ft.Column([
+                ft.Icon(ft.Icons.VIDEOCAM_OFF_ROUNDED, color="#D1E4F8", size=48),
+                ft.Text(
+                    "Cámara Desactivada. Presiona 'Prender Cámara' para iniciar.",
+                    color="#D1E4F8",
+                    size=13,
+                    weight=ft.FontWeight.W_500,
+                    text_align=ft.TextAlign.CENTER
+                )
+            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=10),
+            alignment=ft.Alignment.CENTER,
+            width=640,
+            height=480,
+            visible=True
+        )
+
+    def create_standard_camera_container(self, placeholder_ctrl: ft.Container, camera_img: ft.Image) -> ft.Container:
+        """Crea el contenedor estandarizado 640x480 con borde celeste escolar #4A90E2 y fondo #1A365D."""
+        return ft.Container(
+            content=ft.Stack([
+                placeholder_ctrl,
+                camera_img
+            ]),
+            width=640,
+            height=480,
+            border_radius=12,
+            border=ft.Border.all(3, "#4A90E2"),
+            bgcolor="#1A365D",
+            alignment=ft.Alignment.CENTER,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE
+        )
+
     def _init_controls(self):
         # 1. Controles de Categoría (Card 1)
         self.new_category_input = ft.TextField(
@@ -271,19 +310,25 @@ class LSPUIController:
         )
         self.lbl_frames_val = ft.Text("30", size=12, weight=ft.FontWeight.BOLD, color=COLOR_PRIMARY)
 
-        # 4. Visores de Cámara (Monitores con estilo Stitch 640x360)
+        # 4. Visores de Cámara Estandarizados (640x480, borde #4A90E2, fondo #1A365D)
         self.camera_view = ft.Image(
             src=EMPTY_PIXEL_DATA,
             width=640,
-            height=360,
-            fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain"
+            height=480,
+            fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain",
+            visible=False
         )
         self.test_camera_view = ft.Image(
             src=EMPTY_PIXEL_DATA,
             width=640,
-            height=310,
-            fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain"
+            height=480,
+            fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain",
+            visible=False
         )
+        self.placeholder_train = self.create_camera_placeholder()
+        self.placeholder_test = self.create_camera_placeholder()
+        self.camera_container_train = self.create_standard_camera_container(self.placeholder_train, self.camera_view)
+        self.camera_container_test = self.create_standard_camera_container(self.placeholder_test, self.test_camera_view)
 
         self.warning_banner = ft.Container(
             content=ft.Row([
@@ -324,17 +369,7 @@ class LSPUIController:
             border_radius=6
         )
 
-        # 5b. Modo Avatar de Privacidad (De-identificar Docente)
-        self.switch_avatar = ft.Switch(
-            label="Modo Avatar de Privacidad (De-identificar Docente)",
-            value=False,
-            active_color=COLOR_PRIMARY,
-            label_text_style=ft.TextStyle(color=COLOR_TEXT_TITLE, weight=ft.FontWeight.W_600, size=11),
-            on_change=self.toggle_privacy_avatar,
-            tooltip="Descarta el video real y proyecta un títere vectorial escolar para proteger la identidad biométrica"
-        )
-
-        # 5c. Selector de Categoría para Tab 3 (Nube AWS)
+        # 5b. Selector de Categoría para Tab 3 (Nube AWS)
         self.cloud_category_dropdown = ft.Dropdown(
             hint_text="Categoría activa en S3...",
             text_size=12,
@@ -343,18 +378,107 @@ class LSPUIController:
             focused_border_color=COLOR_PRIMARY,
             color=COLOR_TEXT_TITLE,
             height=38,
-            width=240,
+            width=220,
             border_radius=8,
             content_padding=ft.Padding(10, 0, 10, 0),
             on_select=lambda e: self.on_cloud_category_changed(e.control.value)
         )
 
-        # 6. Botones de Acción (Pestaña 1)
-        self.btn_camera = ft.Button(
-            content="Encender Cámara",
-            icon=ft.Icons.VIDEOCAM_OUTLINED,
+        # 5c. Controles de Cámara de S3 y Comandos de Voz (Columna Derecha)
+        self.cloud_active_category = None
+        self.cloud_active_word = None
+        self.is_cloud_recording = False
+        self.cloud_recorded_frames = []
+        self.voice_listener_running = False
+
+        self.cloud_camera_image = ft.Image(
+            src=EMPTY_PIXEL_DATA,
+            width=640,
+            height=480,
+            fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain",
+            visible=False
+        )
+        self.placeholder_cloud = self.create_camera_placeholder()
+        self.camera_container_cloud = self.create_standard_camera_container(self.placeholder_cloud, self.cloud_camera_image)
+        self.switch_cloud_avatar = ft.Switch(
+            label="Usar Avatar de Privacidad",
+            value=True,
+            active_color=COLOR_PRIMARY,
+            label_text_style=ft.TextStyle(color=COLOR_TEXT_TITLE, weight=ft.FontWeight.W_600, size=11),
+            on_change=self.toggle_cloud_privacy_avatar,
+            tooltip="Activar para renderizar el títere de caricatura escolar, desactivar para usar cámara real"
+        )
+        self.btn_cloud_camera = ft.Button(
+            content="Prender Cámara",
+            icon=ft.Icons.PLAY_ARROW_ROUNDED,
+            bgcolor="#2E7D32",
+            color=ft.Colors.WHITE,
+            on_click=self.toggle_cloud_camera,
+            height=38,
+            expand=True
+        )
+        self.btn_cloud_snapshot = ft.Button(
+            content="Tomar Foto",
+            icon=ft.Icons.CAMERA_ALT,
+            bgcolor="#0284C7",
+            color=ft.Colors.WHITE,
+            on_click=self.cloud_take_photo_action,
+            height=38,
+            expand=True
+        )
+        self.btn_cloud_record = ft.Button(
+            content="Grabar",
+            icon=ft.Icons.RADIO_BUTTON_CHECKED,
+            bgcolor="#EF4444",
+            color=ft.Colors.WHITE,
+            on_click=self.cloud_start_recording_action,
+            height=38,
+            expand=True
+        )
+        self.btn_cloud_stop = ft.Button(
+            content="Detener",
+            icon=ft.Icons.STOP,
+            bgcolor="#64748B",
+            color=ft.Colors.WHITE,
+            on_click=self.cloud_stop_recording_action,
+            height=38,
+            disabled=True,
+            expand=True
+        )
+        self.btn_cloud_preview = ft.Button(
+            content="Ver Vista Previa",
+            icon=ft.Icons.VISIBILITY,
             bgcolor="#F1F5F9",
             color=COLOR_TEXT_TITLE,
+            on_click=self.cloud_preview_action,
+            height=38,
+            expand=True
+        )
+        self.lbl_cloud_active_word = ft.Text(
+            "Palabra: (Seleccione una de la tabla)",
+            size=12,
+            weight=ft.FontWeight.BOLD,
+            color=COLOR_PRIMARY
+        )
+        self.lbl_cloud_cam_status = ft.Text(
+            "Cámara lista. Seleccione una palabra y use los botones o comandos de voz.",
+            size=11,
+            color=COLOR_TEXT_MUTED
+        )
+        self.progress_cloud_compile = ft.ProgressBar(visible=False, color=COLOR_PRIMARY, height=4)
+        self.lbl_voice_command_status = ft.Text(
+            "🎙️ Micrófono Activo: Esperando comando ('captura', 'grabar', 'no grabes')...",
+            size=11,
+            color=COLOR_PRIMARY,
+            weight=ft.FontWeight.W_500
+        )
+
+        # 6. Botones de Acción (Pestaña 1)
+        self.btn_camera = ft.Button(
+            content="Prender Cámara",
+            icon=ft.Icons.PLAY_ARROW_ROUNDED,
+            bgcolor="#2E7D32",
+            color=ft.Colors.WHITE,
             on_click=self.toggle_camera,
             width=200,
             height=42
@@ -408,6 +532,15 @@ class LSPUIController:
             bgcolor=COLOR_PRIMARY,
             color=ft.Colors.WHITE,
             on_click=self.toggle_live_test,
+            height=38,
+            expand=True
+        )
+        self.btn_test_camera = ft.Button(
+            content="Prender Cámara",
+            icon=ft.Icons.PLAY_ARROW_ROUNDED,
+            bgcolor="#2E7D32",
+            color=ft.Colors.WHITE,
+            on_click=self.toggle_test_camera,
             height=38,
             expand=True
         )
@@ -485,36 +618,65 @@ class LSPUIController:
                 update_ui_safely(p)
 
         if index == 0:
+            if hasattr(self, "vision_service") and self.vision_service:
+                self.vision_service.set_privacy_avatar_mode(False)
+            self.stop_voice_commands_listener()
             if self.test_model_banner:
                 self.test_model_banner.visible = False
                 update_ui_safely(self.test_model_banner)
             self.voice_service.allow_voice_trigger = True
         elif index == 1:
+            if hasattr(self, "vision_service") and self.vision_service:
+                self.vision_service.set_privacy_avatar_mode(False)
+            self.stop_voice_commands_listener()
             if self.test_model_banner:
                 self.test_model_banner.visible = True
                 update_ui_safely(self.test_model_banner)
             self.voice_service.allow_voice_trigger = False
             self.load_trained_models_to_test_dropdown()
         elif index == 2:
+            if hasattr(self, "switch_cloud_avatar") and self.switch_cloud_avatar:
+                self.vision_service.set_privacy_avatar_mode(bool(self.switch_cloud_avatar.value))
             if self.test_model_banner:
                 self.test_model_banner.visible = False
                 update_ui_safely(self.test_model_banner)
             self.voice_service.allow_voice_trigger = False
             self.refresh_cloud_table()
+            if self.is_camera_active:
+                self.start_voice_commands_listener()
 
     # --- REFRESCO DE CÁMARA CON PROTECCIÓN CONTRA DESTROYED SESSION ---
 
     def on_frame_update(self, base64_image: str, is_obstructed: bool = False):
+        if not getattr(self, "is_camera_active", False):
+            return
+
         data_src = f"data:image/jpeg;base64,{base64_image}"
-        
-        self.camera_view.src = data_src
-        update_ui_safely(self.camera_view)
+        current_tab = getattr(self.tabs, "selected_index", 0) if hasattr(self, "tabs") and self.tabs else 0
 
-        if hasattr(self, "test_camera_view") and getattr(self.test_camera_view, "visible", True):
-            self.test_camera_view.src = data_src
-            update_ui_safely(self.test_camera_view)
+        if current_tab == 0:
+            if hasattr(self, "camera_view") and getattr(self.camera_view, "visible", False):
+                self.camera_view.src = data_src
+                update_ui_safely(self.camera_view)
+        elif current_tab == 1:
+            if hasattr(self, "test_camera_view") and getattr(self.test_camera_view, "visible", False):
+                self.test_camera_view.src = data_src
+                update_ui_safely(self.test_camera_view)
+        elif current_tab == 2:
+            if hasattr(self, "cloud_camera_image") and getattr(self.cloud_camera_image, "visible", False):
+                self.cloud_camera_image.src = data_src
+                update_ui_safely(self.cloud_camera_image)
 
-        if self.warning_banner.visible != is_obstructed:
+        if getattr(self, "is_cloud_recording", False):
+            raw_frame = getattr(self.vision_service, "last_raw_frame", None)
+            if raw_frame is not None:
+                self.cloud_recorded_frames.append(raw_frame.copy())
+                cnt = len(self.cloud_recorded_frames)
+                if cnt % 4 == 0:
+                    self.lbl_cloud_cam_status.value = f"🔴 Grabando: {cnt} frames acumulados..."
+                    update_ui_safely(self.lbl_cloud_cam_status)
+
+        if hasattr(self, "warning_banner") and self.warning_banner.visible != is_obstructed:
             self.warning_banner.visible = is_obstructed
             update_ui_safely(self.warning_banner)
 
@@ -601,14 +763,12 @@ class LSPUIController:
         update_ui_safely(self.voice_badge)
         update_ui_safely(self.switch_voice)
 
-    def toggle_privacy_avatar(self, e):
-        val = bool(self.switch_avatar.value)
-        self.vision_service.set_privacy_avatar_mode(val)
-        if val:
-            show_snack_bar(self.page, "Modo Avatar de Privacidad ACTIVADO: El video real se descarta.")
-        else:
-            show_snack_bar(self.page, "Modo Avatar DESACTIVADO: Vista de cámara real restaurada.")
-        update_ui_safely(self.switch_avatar)
+    def toggle_privacy_avatar(self, e=None):
+        if hasattr(self, "toggle_cloud_privacy_avatar"):
+            self.toggle_cloud_privacy_avatar(e)
+
+    def toggle_test_privacy_avatar(self, e=None):
+        pass
 
     def on_voice_status_update(self, msg: str):
         self.status_text.value = msg
@@ -1090,38 +1250,120 @@ class LSPUIController:
             self.btn_generate_cnn.disabled = True
         update_ui_safely(self.page)
 
-    # --- ACCIONES DE CÁMARA ---
+    # --- ACCIONES DE CÁMARA Y CONTROL DE HARDWARE ---
 
-    def toggle_camera(self, e):
+    def release_all_camera_streams(self):
+        """
+        Libera de forma centralizada, segura y síncrona todas las capturas activas de la webcam (OpenCV VideoCapture)
+        para evitar el error de hardware ocupado y pantalla negra al abrir modales o alternar vistas.
+        """
+        try:
+            # 1. Detener sesión de inferencia en tiempo real si estaba activa
+            if hasattr(self, "is_testing") and self.is_testing:
+                if hasattr(self, "live_tester") and self.live_tester:
+                    try:
+                        self.live_tester.stop()
+                    except Exception:
+                        pass
+                if hasattr(self, "vision_service") and self.vision_service:
+                    self.vision_service.live_tester = None
+                self.is_testing = False
+                if hasattr(self, "btn_toggle_test") and self.btn_toggle_test:
+                    self.btn_toggle_test.content = "Iniciar Prueba"
+                    self.btn_toggle_test.icon = ft.Icons.PLAY_ARROW_ROUNDED
+                    self.btn_toggle_test.bgcolor = COLOR_PRIMARY
+                    update_ui_safely(self.btn_toggle_test)
+
+            # 2. Detener hilo de comandos de voz si estaba en marcha
+            if hasattr(self, "stop_voice_commands_listener"):
+                self.stop_voice_commands_listener()
+
+            self.is_cloud_recording = False
+
+            # 3. Detener y liberar VideoCapture del servicio de visión principal
+            if hasattr(self, "vision_service") and self.vision_service:
+                self.vision_service.stop()
+
+            # 4. Restablecer banderas de estado y sincronizar botones/placeholders
+            self.is_camera_active = False
+            self.sync_camera_buttons_and_placeholders(False)
+
+            if hasattr(self, "warning_banner") and self.warning_banner:
+                self.warning_banner.visible = False
+                update_ui_safely(self.warning_banner)
+
+            # 5. Pausa obligatoria para que el sistema operativo y DirectShow en Windows liberen el descriptor físico
+            time.sleep(0.15)
+        except Exception as ex:
+            print(f"[CAM RELEASE] Error liberando cámaras: {ex}")
+
+    def sync_camera_buttons_and_placeholders(self, is_active: bool):
+        """Sincroniza el estado de los 3 botones de cámara y sus placeholders en todas las pestañas."""
+        btn_text = "Apagar Cámara" if is_active else "Prender Cámara"
+        btn_icon = ft.Icons.STOP_ROUNDED if is_active else ft.Icons.PLAY_ARROW_ROUNDED
+        btn_color = "#E25C5C" if is_active else "#2E7D32"
+
+        buttons = [getattr(self, "btn_camera", None),
+                   getattr(self, "btn_test_camera", None),
+                   getattr(self, "btn_cloud_camera", None)]
+
+        for btn in buttons:
+            if btn is not None:
+                btn.content = btn_text
+                btn.icon = btn_icon
+                btn.bgcolor = btn_color
+                btn.color = ft.Colors.WHITE
+                update_ui_safely(btn)
+
+        # Sincronizar visibilidad de placeholders y cámaras
+        placeholders = [getattr(self, "placeholder_train", None),
+                        getattr(self, "placeholder_test", None),
+                        getattr(self, "placeholder_cloud", None)]
+        for pl in placeholders:
+            if pl is not None:
+                pl.visible = not is_active
+                update_ui_safely(pl)
+
+        camera_views = [getattr(self, "camera_view", None),
+                        getattr(self, "test_camera_view", None),
+                        getattr(self, "cloud_camera_image", None)]
+        for cv in camera_views:
+            if cv is not None:
+                cv.visible = is_active
+                if not is_active:
+                    cv.src = EMPTY_PIXEL_DATA
+                update_ui_safely(cv)
+
+    def toggle_test_camera(self, e=None):
+        """Conmuta la cámara web directamente desde la pestaña de Tester."""
+        self.toggle_camera(e)
+
+    def toggle_camera(self, e=None):
         if not self.is_camera_active:
             self.status_text.value = "Iniciando cámara web a 25 FPS estables..."
             update_ui_safely(self.status_text)
             
             self.vision_service.start()
             self.is_camera_active = True
-            self.btn_camera.content = "Apagar Cámara"
-            self.btn_camera.icon = ft.Icons.VIDEOCAM_OFF_OUTLINED
-            self.btn_camera.bgcolor = COLOR_REC_BTN
-            self.btn_camera.color = ft.Colors.WHITE
+            self.sync_camera_buttons_and_placeholders(True)
+
             self.status_text.value = "Cámara activa (25 FPS). Listo para operar."
             self.status_text.color = COLOR_SUCCESS
+            update_ui_safely(self.status_text)
+            if hasattr(self, "tabs") and getattr(self.tabs, "selected_index", 0) == 2:
+                self.start_voice_commands_listener()
         else:
+            self.stop_voice_commands_listener()
             self.vision_service.stop()
             self.is_camera_active = False
-            self.btn_camera.content = "Encender Cámara"
-            self.btn_camera.icon = ft.Icons.VIDEOCAM_OUTLINED
-            self.btn_camera.bgcolor = "#F1F5F9"
-            self.btn_camera.color = COLOR_TEXT_TITLE
-            self.camera_view.src = EMPTY_PIXEL_DATA
-            self.test_camera_view.src = EMPTY_PIXEL_DATA
-            self.warning_banner.visible = False
+            self.sync_camera_buttons_and_placeholders(False)
+
+            if hasattr(self, "warning_banner") and self.warning_banner:
+                self.warning_banner.visible = False
+                update_ui_safely(self.warning_banner)
             self.status_text.value = "Cámara apagada."
             self.status_text.color = COLOR_TEXT_MUTED
-        
-        update_ui_safely(self.btn_camera)
-        update_ui_safely(self.status_text)
-        update_ui_safely(self.camera_view)
-        update_ui_safely(self.test_camera_view)
+            update_ui_safely(self.status_text)
 
     # --- MÓDULO DE ENTRENAMIENTO CNN 1D CON SAFE UPDATE ---
 
@@ -1393,7 +1635,7 @@ class LSPUIController:
             local_badge = ft.Container(
                 content=ft.Row([
                     ft.Icon(ft.Icons.CHECK_CIRCLE, size=14, color=COLOR_SUCCESS),
-                    ft.Text("Entrenado (.keras)", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.W_600)
+                    ft.Text("Entrenado (.keras)", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.W_600, overflow=ft.TextOverflow.ELLIPSIS, max_lines=1)
                 ], spacing=4),
                 bgcolor="#DCFCE7",
                 border_radius=6,
@@ -1403,7 +1645,7 @@ class LSPUIController:
             local_badge = ft.Container(
                 content=ft.Row([
                     ft.Icon(ft.Icons.CANCEL_OUTLINED, size=14, color=COLOR_REC_BTN),
-                    ft.Text("Sin Modelo Local", size=11, color=COLOR_REC_BTN, weight=ft.FontWeight.W_600)
+                    ft.Text("Sin Modelo Local", size=11, color=COLOR_REC_BTN, weight=ft.FontWeight.W_600, overflow=ft.TextOverflow.ELLIPSIS, max_lines=1)
                 ], spacing=4),
                 bgcolor="#FEE2E2",
                 border_radius=6,
@@ -1415,7 +1657,7 @@ class LSPUIController:
             cloud_badge = ft.Container(
                 content=ft.Row([
                     ft.Text("🚀", size=12),
-                    ft.Text("Sincronizado en S3", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.BOLD)
+                    ft.Text("Sincronizado en S3", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.BOLD, overflow=ft.TextOverflow.ELLIPSIS, max_lines=1)
                 ], spacing=4),
                 bgcolor="#E8F5E9",
                 border_radius=6,
@@ -1429,7 +1671,7 @@ class LSPUIController:
             cloud_badge = ft.Container(
                 content=ft.Row([
                     ft.Text("⚠️", size=12),
-                    ft.Text("Desactualizado en S3", size=11, color="#E65100", weight=ft.FontWeight.BOLD)
+                    ft.Text("Desactualizado en S3", size=11, color="#E65100", weight=ft.FontWeight.BOLD, overflow=ft.TextOverflow.ELLIPSIS, max_lines=1)
                 ], spacing=4),
                 bgcolor="#FFF3E0",
                 border_radius=6,
@@ -1443,7 +1685,7 @@ class LSPUIController:
             cloud_badge = ft.Container(
                 content=ft.Row([
                     ft.Text("☁️", size=12),
-                    ft.Text("Solo en S3", size=11, color=COLOR_TEXT_MUTED, weight=ft.FontWeight.W_600)
+                    ft.Text("Solo en S3", size=11, color=COLOR_TEXT_MUTED, weight=ft.FontWeight.W_600, overflow=ft.TextOverflow.ELLIPSIS, max_lines=1)
                 ], spacing=4),
                 bgcolor="#ECEFF1",
                 border_radius=6,
@@ -1457,7 +1699,7 @@ class LSPUIController:
             cloud_badge = ft.Container(
                 content=ft.Row([
                     ft.Icon(ft.Icons.WIFI_OFF, size=14, color=COLOR_REC_BTN),
-                    ft.Text("Error Conexión", size=11, color=COLOR_REC_BTN, weight=ft.FontWeight.BOLD)
+                    ft.Text("Error Conexión", size=11, color=COLOR_REC_BTN, weight=ft.FontWeight.BOLD, overflow=ft.TextOverflow.ELLIPSIS, max_lines=1)
                 ], spacing=4),
                 bgcolor="#FEE2E2",
                 border_radius=6,
@@ -1471,7 +1713,7 @@ class LSPUIController:
             cloud_badge = ft.Container(
                 content=ft.Row([
                     ft.Text("☁️", size=12),
-                    ft.Text("No Publicado", size=11, color="#455A64", weight=ft.FontWeight.BOLD)
+                    ft.Text("No Publicado", size=11, color="#455A64", weight=ft.FontWeight.BOLD, overflow=ft.TextOverflow.ELLIPSIS, max_lines=1)
                 ], spacing=4),
                 bgcolor="#ECEFF1",
                 border_radius=6,
@@ -1501,21 +1743,45 @@ class LSPUIController:
             on_click=lambda ev, c=cat: self.delete_category_from_cloud(c)
         )
 
-        card_content = ft.Row([
-            ft.Container(
-                content=ft.Row([
-                    ft.Icon(ft.Icons.AUTO_AWESOME, color=COLOR_PRIMARY, size=20),
-                    ft.Column([
-                        ft.Text(f"CATEGORÍA: {cat.upper()}", size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
-                        ft.Text(f"modelos/{cat}/tfjs_model/ (model.json + shard*.bin)", size=10, color=COLOR_TEXT_MUTED)
-                    ], spacing=1)
-                ], spacing=8),
-                width=260
-            ),
-            ft.Container(content=local_badge, width=170),
-            ft.Container(content=cloud_badge, width=190),
-            ft.Row([btn_upload, btn_del_cloud], spacing=6, expand=True)
-        ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        # Fila 1: Información de categoría y ruta técnica
+        header_row = ft.Row([
+            ft.Icon(ft.Icons.AUTO_AWESOME, color=COLOR_PRIMARY, size=18),
+            ft.Column([
+                ft.Text(
+                    f"CATEGORÍA: {cat.upper()}",
+                    size=13,
+                    weight=ft.FontWeight.BOLD,
+                    color=COLOR_TEXT_TITLE,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                    max_lines=1
+                ),
+                ft.Text(
+                    f"modelos/{cat}/tfjs_model/ (model.json + shard*.bin)",
+                    size=10,
+                    color=COLOR_TEXT_MUTED,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                    max_lines=1
+                )
+            ], spacing=1, expand=True)
+        ], spacing=8, expand=True)
+
+        # Fila 2: Badges y Botones de Acción flexibles con salto de línea automático
+        badges_actions_row = ft.Row(
+            controls=[
+                local_badge,
+                cloud_badge,
+                btn_upload,
+                btn_del_cloud
+            ],
+            spacing=8,
+            wrap=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER
+        )
+
+        card_content = ft.Column([
+            header_row,
+            badges_actions_row
+        ], spacing=8)
 
         self.cloud_model_card_container.content = card_content
         update_ui_safely(self.cloud_model_card_container)
@@ -1523,7 +1789,7 @@ class LSPUIController:
     def refresh_cloud_resources_table(self, category_name: str):
         """
         Consulta de forma asíncrona todos los recursos didácticos de la categoría en S3 y local,
-        poblando interactivamente la lista de señas.
+        poblando interactivamente la lista de señas adaptada para la columna izquierda (600px).
         """
         def _fetch_worker():
             try:
@@ -1545,7 +1811,14 @@ class LSPUIController:
                         )
                     )
                 else:
+                    if not self.cloud_active_word or self.cloud_active_word not in all_words:
+                        self.cloud_active_category = cat_clean
+                        self.cloud_active_word = all_words[0]
+                        self.lbl_cloud_active_word.value = f"Palabra activa: {all_words[0].upper()} ({cat_clean.upper()})"
+                        update_ui_safely(self.lbl_cloud_active_word)
+
                     for word in all_words:
+                        is_selected = bool(self.cloud_active_word and word.lower().strip() == self.cloud_active_word.lower().strip())
                         # Muestras locales
                         word_dir = self.data_manager._get_word_dir(cat_clean, word)
                         samples_count = 0
@@ -1559,118 +1832,118 @@ class LSPUIController:
                         has_local = (local_path is not None and os.path.exists(local_path))
                         has_cloud = (st == "SINCRONIZADO" or st == "PENDIENTE")
 
-                        # 1. Estado Local: 🟢 "Avatar Listo" / ⚫ "Sin Guía Visual"
+                        # 1. Estado Local: 🟢 "Listo" / ⚫ "Sin Guía"
                         if has_local:
                             filename = os.path.basename(local_path)
                             badge_local = ft.Container(
                                 content=ft.Row([
-                                    ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, size=14, color=COLOR_SUCCESS),
-                                    ft.Text("Avatar Listo", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.BOLD),
-                                    ft.Text(f"({filename})", size=10, color="#15803D", weight=ft.FontWeight.W_500)
-                                ], spacing=4),
+                                    ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, size=13, color=COLOR_SUCCESS),
+                                    ft.Text("Listo", size=10, color=COLOR_SUCCESS, weight=ft.FontWeight.BOLD),
+                                    ft.Text(f"({filename.split('.')[-1].upper()})", size=9, color="#15803D")
+                                ], spacing=3),
                                 bgcolor="#DCFCE7",
                                 border_radius=6,
-                                padding=ft.Padding(8, 4, 8, 4),
+                                padding=ft.Padding(6, 3, 6, 3),
                                 tooltip=f"Archivo local: {local_path}"
                             )
                         else:
                             badge_local = ft.Container(
                                 content=ft.Row([
-                                    ft.Icon(ft.Icons.CIRCLE, size=10, color=COLOR_TEXT_MUTED),
-                                    ft.Text("Sin Guía Visual", size=11, color=COLOR_TEXT_MUTED, weight=ft.FontWeight.W_500)
-                                ], spacing=5),
+                                    ft.Icon(ft.Icons.CIRCLE, size=8, color=COLOR_TEXT_MUTED),
+                                    ft.Text("Sin Guía", size=10, color=COLOR_TEXT_MUTED, weight=ft.FontWeight.W_500)
+                                ], spacing=4),
                                 bgcolor="#F1F5F9",
                                 border_radius=6,
-                                padding=ft.Padding(8, 4, 8, 4)
+                                padding=ft.Padding(6, 3, 6, 3)
                             )
 
-                        # 2. Estado en S3: 🚀 "Publicado" / ⚠️ "Desactualizado" / ☁️ "No en S3"
+                        # 2. Estado en S3: 🚀 "Sincronizado" / ⚠️ "Pendiente" / ☁️ "No en S3"
                         if st == "SINCRONIZADO":
                             badge_s3 = ft.Container(
                                 content=ft.Row([
-                                    ft.Text("🚀", size=12),
-                                    ft.Text("Publicado", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.BOLD)
-                                ], spacing=4),
+                                    ft.Text("🚀", size=11),
+                                    ft.Text("Sincronizado", size=10, color=COLOR_SUCCESS, weight=ft.FontWeight.BOLD)
+                                ], spacing=3),
                                 bgcolor="#E8F5E9",
                                 border_radius=6,
-                                padding=ft.Padding(8, 4, 8, 4),
-                                tooltip="El archivo local coincide perfectamente con el almacenado en S3"
+                                padding=ft.Padding(6, 3, 6, 3),
+                                tooltip="Coincide con S3"
                             )
                         elif st == "PENDIENTE":
                             badge_s3 = ft.Container(
                                 content=ft.Row([
-                                    ft.Text("⚠️", size=12),
-                                    ft.Text("Desactualizado", size=11, color="#E65100", weight=ft.FontWeight.BOLD)
-                                ], spacing=4),
+                                    ft.Text("⚠️", size=11),
+                                    ft.Text("Pendiente", size=10, color="#E65100", weight=ft.FontWeight.BOLD)
+                                ], spacing=3),
                                 bgcolor="#FFF3E0",
                                 border_radius=6,
-                                padding=ft.Padding(8, 4, 8, 4),
-                                tooltip="El avatar local se volvió a grabar/reemplazar, pero no se ha subido a AWS"
+                                padding=ft.Padding(6, 3, 6, 3),
+                                tooltip="Local modificado pendiente de subir a S3"
                             )
                         else:  # NO_EN_S3
                             badge_s3 = ft.Container(
                                 content=ft.Row([
-                                    ft.Text("☁️", size=12),
-                                    ft.Text("No en S3", size=11, color="#455A64", weight=ft.FontWeight.BOLD)
-                                ], spacing=4),
+                                    ft.Text("☁️", size=11),
+                                    ft.Text("No en S3", size=10, color="#455A64", weight=ft.FontWeight.BOLD)
+                                ], spacing=3),
                                 bgcolor="#ECEFF1",
                                 border_radius=6,
-                                padding=ft.Padding(8, 4, 8, 4),
-                                tooltip="El recurso visual aún no ha sido subido a S3"
+                                padding=ft.Padding(6, 3, 6, 3),
+                                tooltip="No subido a S3"
                             )
 
-                        # 3. Controles de Fila Integrados (Botones en Paralelo)
-                        btn_record_avatar = ft.Button(
-                            content="Grabar Avatar",
+                        # 3. Controles de Fila Integrados
+                        btn_select_capture = ft.Button(
+                            content="Capturar",
                             icon=ft.Icons.VIDEOCAM,
-                            bgcolor=COLOR_PRIMARY,
+                            bgcolor="#0284C7" if is_selected else COLOR_PRIMARY,
                             color=ft.Colors.WHITE,
-                            height=32,
-                            tooltip=f"Grabar o reemplazar Avatar de Privacidad para '{word.upper()}'",
-                            on_click=lambda ev, c=cat_clean, w=word: self.open_avatar_recorder_modal(c, w)
+                            height=30,
+                            tooltip=f"Seleccionar '{word.upper()}' para captura en panel de cámara",
+                            on_click=lambda ev, c=cat_clean, w=word: self.select_cloud_word_for_capture(c, w)
                         )
 
                         btn_view_local = ft.IconButton(
                             icon=ft.Icons.VISIBILITY,
                             icon_color="#0284C7" if has_local else COLOR_TEXT_MUTED,
-                            icon_size=18,
+                            icon_size=16,
                             disabled=not has_local,
-                            tooltip=f"Ver Avatar Local grabado ({filename if has_local else 'No disponible'})",
+                            tooltip=f"Ver recurso local ({filename if has_local else 'No disponible'})",
                             on_click=lambda ev, c=cat_clean, w=word: self.open_local_media_preview(c, w)
                         )
 
                         btn_upload_s3 = ft.IconButton(
                             icon=ft.Icons.CLOUD_UPLOAD,
                             icon_color=COLOR_SUCCESS if has_local else COLOR_TEXT_MUTED,
-                            icon_size=18,
+                            icon_size=16,
                             disabled=not has_local,
-                            tooltip="Subir a AWS S3 (recursos/{categoria}/{palabra}_avatar.[ext])",
+                            tooltip="Subir a AWS S3",
                             on_click=lambda ev, c=cat_clean, w=word: self.upload_word_resource(c, w)
                         )
 
                         btn_delete_s3 = ft.IconButton(
                             icon=ft.Icons.CLOUD_OFF,
                             icon_color="#E11D48" if has_cloud else COLOR_TEXT_MUTED,
-                            icon_size=18,
+                            icon_size=16,
                             disabled=not has_cloud,
-                            tooltip="Eliminar recurso didáctico de AWS S3",
+                            tooltip="Eliminar de AWS S3",
                             on_click=lambda ev, c=cat_clean, w=word: self.delete_word_resource_s3(c, w)
                         )
 
                         btn_delete_local = ft.IconButton(
                             icon=ft.Icons.DELETE_OUTLINE,
                             icon_color="#DC2626" if has_local else COLOR_TEXT_MUTED,
-                            icon_size=18,
+                            icon_size=16,
                             disabled=not has_local,
-                            tooltip="Eliminar archivo multimedia local de la PC",
+                            tooltip="Eliminar archivo local",
                             on_click=lambda ev, c=cat_clean, w=word: self.delete_word_resource_local(c, w)
                         )
 
                         btn_pick = ft.IconButton(
                             icon=ft.Icons.ATTACH_FILE,
                             icon_color=COLOR_TEXT_MUTED,
-                            icon_size=18,
-                            tooltip="Cargar archivo multimedia existente desde PC (GIF/PNG/JPG/MP4)",
+                            icon_size=16,
+                            tooltip="Importar archivo desde PC",
                             on_click=lambda ev, c=cat_clean, w=word: self.open_file_picker_for_word(c, w)
                         )
 
@@ -1678,22 +1951,22 @@ class LSPUIController:
                             content=ft.Row([
                                 ft.Container(
                                     content=ft.Row([
-                                        ft.Icon(ft.Icons.TRANSLATE, color=COLOR_PRIMARY, size=16),
+                                        ft.Icon(ft.Icons.TRANSLATE, color=COLOR_PRIMARY, size=15),
                                         ft.Column([
-                                            ft.Text(word.upper(), size=12, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
-                                            ft.Text(f"{samples_count} muestras", size=10, color=COLOR_TEXT_MUTED)
-                                        ], spacing=1)
-                                    ], spacing=8),
-                                    width=160
+                                            ft.Text(word.upper(), size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
+                                            ft.Text(f"{samples_count} m.", size=9, color=COLOR_TEXT_MUTED)
+                                        ], spacing=0)
+                                    ], spacing=5),
+                                    width=110
                                 ),
-                                ft.Container(content=badge_local, width=170),
-                                ft.Container(content=badge_s3, width=150),
-                                ft.Row([btn_record_avatar, btn_view_local, btn_upload_s3, btn_delete_s3, btn_delete_local, btn_pick], spacing=4, expand=True)
+                                ft.Container(content=badge_local, width=105),
+                                ft.Container(content=badge_s3, width=105),
+                                ft.Row([btn_select_capture, btn_view_local, btn_upload_s3, btn_delete_s3, btn_delete_local, btn_pick], spacing=2, expand=True)
                             ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                            bgcolor="#FFFFFF",
-                            border=ft.Border.all(1, COLOR_BORDER),
+                            bgcolor="#EFF6FF" if is_selected else "#FFFFFF",
+                            border=ft.Border.all(1.5 if is_selected else 1, COLOR_PRIMARY if is_selected else COLOR_BORDER),
                             border_radius=8,
-                            padding=ft.Padding(12, 6, 12, 6)
+                            padding=ft.Padding(8, 4, 8, 4)
                         )
                         rows.append(row_container)
 
@@ -1710,336 +1983,299 @@ class LSPUIController:
 
         threading.Thread(target=_fetch_worker, daemon=True).start()
 
-    def open_avatar_recorder_modal(self, category: str, word: str):
-        """
-        Abre una ventana modal (ft.AlertDialog) con el grabador interactivo en tiempo real del Avatar
-        de Privacidad. Descarta el feed RGB y proyecta el avatar pedagógico sobre lienzo escolar #F4F8FA.
-        Dispone de 3 botones distribuidos simétricamente: Tomar Foto PNG, Grabar GIF/Video y Cancelar/Cerrar.
-        """
-        cat_clean = category.lower().strip()
-        word_clean = word.lower().strip()
+    def select_cloud_word_for_capture(self, category: str, word: str):
+        """Selecciona la palabra activa para captura multimedia en la columna derecha de S3."""
+        self.cloud_active_category = category.lower().strip()
+        self.cloud_active_word = word.lower().strip()
+        self.lbl_cloud_active_word.value = f"Palabra activa: {word.upper()} ({category.upper()})"
+        self.lbl_cloud_cam_status.value = f"Listo para capturar seña para '{word.upper()}'."
+        self.lbl_cloud_cam_status.color = COLOR_PRIMARY
+        update_ui_safely(self.lbl_cloud_active_word)
+        update_ui_safely(self.lbl_cloud_cam_status)
+        show_snack_bar(self.page, f"Palabra activa: '{word.upper()}'. Listo para capturar en el monitor.")
+        if not self.is_camera_active:
+            self.toggle_cloud_camera()
+        else:
+            self.refresh_cloud_resources_table(category)
 
-        # Detener temporalmente la cámara principal si estaba encendida para evitar bloqueo de dispositivo en Windows
-        was_main_cam_running = bool(self.vision_service and self.vision_service.is_running.is_set())
-        if was_main_cam_running:
+    def toggle_cloud_camera(self, e=None):
+        """Conmuta la cámara web directamente dentro de la pestaña S3."""
+        if not self.is_camera_active:
+            self.release_all_camera_streams()
+            time.sleep(0.1)
+
+            if hasattr(self, "switch_cloud_avatar") and self.switch_cloud_avatar:
+                self.vision_service.set_privacy_avatar_mode(bool(self.switch_cloud_avatar.value))
+
+            self.vision_service.start()
+            self.is_camera_active = True
+            self.sync_camera_buttons_and_placeholders(True)
+
+            self.lbl_cloud_cam_status.value = "Cámara activa (25 FPS). Listo para capturar."
+            self.lbl_cloud_cam_status.color = COLOR_SUCCESS
+            update_ui_safely(self.lbl_cloud_cam_status)
+
+            self.start_voice_commands_listener()
+        else:
+            self.stop_voice_commands_listener()
+            if self.is_cloud_recording:
+                self.is_cloud_recording = False
+                self.btn_cloud_record.disabled = False
+                self.btn_cloud_stop.disabled = True
+                self.btn_cloud_snapshot.disabled = False
+                update_ui_safely(self.btn_cloud_record)
+                update_ui_safely(self.btn_cloud_stop)
+                update_ui_safely(self.btn_cloud_snapshot)
+
             self.vision_service.stop()
+            self.is_camera_active = False
+            self.sync_camera_buttons_and_placeholders(False)
 
-        modal_running = threading.Event()
-        modal_running.set()
-        is_recording = threading.Event()
-        buffer_frames = []
-        last_rendered_frame = [None]
+            self.lbl_cloud_cam_status.value = "Cámara apagada."
+            self.lbl_cloud_cam_status.color = COLOR_TEXT_MUTED
+            update_ui_safely(self.lbl_cloud_cam_status)
 
-        # Visor de OpenCV en formato adaptado al lienzo pedagógico 650x450
-        img_visor = ft.Image(
-            src=EMPTY_PIXEL_DATA,
-            width=620,
-            height=370,
-            fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain",
-            border_radius=8
-        )
+    def toggle_cloud_privacy_avatar(self, e=None):
+        """Conmuta entre cámara real y avatar pedagógico en la pestaña S3."""
+        val = bool(self.switch_cloud_avatar.value)
+        if hasattr(self, "vision_service") and self.vision_service:
+            self.vision_service.set_privacy_avatar_mode(val)
+        mode_str = "Avatar de Privacidad (Didáctico)" if val else "Cámara Real"
+        self.lbl_cloud_cam_status.value = f"Modo visual: {mode_str}."
+        update_ui_safely(self.lbl_cloud_cam_status)
 
-        lbl_modal_status = ft.Text("Iniciando cámara y renderizador de Avatar pedagógico...", size=11, color=COLOR_PRIMARY, weight=ft.FontWeight.W_500)
-        lbl_modal_counter = ft.Text("0 frames grabados", size=11, color=COLOR_TEXT_MUTED)
-        progress_compile = ft.ProgressBar(visible=False, color=COLOR_PRIMARY, height=4)
+    def cloud_take_photo_action(self, e=None):
+        """Toma una foto estática PNG de la seña actual y la guarda localmente."""
+        if not self.is_camera_active:
+            show_snack_bar(self.page, "Debe encender la cámara antes de tomar una foto.", is_error=True)
+            return
+        if not self.cloud_active_word:
+            show_snack_bar(self.page, "Seleccione primero una palabra de la tabla para capturar.", is_error=True)
+            return
 
-        # Botón 1: Tomar Foto PNG
-        btn_take_snapshot = ft.Button(
-            content="Tomar Foto PNG",
-            icon=ft.Icons.CAMERA_ALT,
-            bgcolor="#0284C7",
-            color=ft.Colors.WHITE,
-            height=40
-        )
+        frame = getattr(self.vision_service, "last_raw_frame", None)
+        if frame is None:
+            show_snack_bar(self.page, "No hay fotograma disponible para capturar.", is_error=True)
+            return
 
-        # Botón 2: Grabar GIF/Video (conmutador interactivo Grabar / Detener)
-        btn_record_toggle = ft.Button(
-            content="Grabar GIF/Video",
-            icon=ft.Icons.RADIO_BUTTON_CHECKED,
-            bgcolor="#EF4444",
-            color=ft.Colors.WHITE,
-            height=40
-        )
+        frame_to_save = frame.copy()
+        cat = self.cloud_active_category or (self.cloud_category_dropdown.value or "").lower().strip()
+        word = self.cloud_active_word
 
-        # Botón 3: Cancelar / Cerrar
-        btn_close_dialog = ft.Button(
-            content="Cancelar / Cerrar",
-            icon=ft.Icons.CLOSE,
-            bgcolor="#64748B",
-            color=ft.Colors.WHITE,
-            height=40
-        )
+        def _snap_worker():
+            try:
+                saved_path = self.cloud_service.save_avatar_snapshot(cat, word, frame_to_save)
+                filename = os.path.basename(saved_path)
+                def _ui_done():
+                    self.lbl_cloud_cam_status.value = f"✅ Foto '{filename}' guardada con éxito."
+                    self.lbl_cloud_cam_status.color = COLOR_SUCCESS
+                    update_ui_safely(self.lbl_cloud_cam_status)
+                    show_snack_bar(self.page, f"Foto '{filename}' guardada para '{word.upper()}'.")
+                    self.refresh_cloud_resources_table(cat)
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_done)
+                else:
+                    _ui_done()
+            except Exception as ex:
+                show_snack_bar(self.page, f"Error al guardar foto: {ex}", is_error=True)
 
-        # AlertDialog espacioso (650x450) con distribución simétrica de los 3 botones
-        recorder_dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Row([
-                ft.Container(
-                    content=ft.Icon(ft.Icons.VIDEOCAM_ROUNDED, color=COLOR_PRIMARY, size=24),
-                    bgcolor=COLOR_PRIMARY_LIGHT,
-                    border_radius=8,
-                    padding=8
-                ),
-                ft.Column([
-                    ft.Text(f"GRABADOR DE AVATAR: {word.upper()}", size=15, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
-                    ft.Text(f"Categoría: {category.upper()} • Avatar Pedagógico Didáctico (Lienzo #F4F8FA)", size=10, color=COLOR_TEXT_MUTED)
-                ], spacing=2)
-            ], spacing=10),
-            content_padding=20,
-            content=ft.Container(
-                content=ft.Column([
-                    ft.Container(
-                        content=img_visor,
-                        width=620,
-                        height=370,
-                        bgcolor="#F4F8FA",
-                        border=ft.Border.all(1, COLOR_BORDER),
-                        border_radius=10,
-                        alignment=ft.Alignment.CENTER
-                    ),
-                    progress_compile,
-                    ft.Row([lbl_modal_status, lbl_modal_counter], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                ], spacing=6, tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                width=650,
-                height=450,
-                border_radius=12,
-            ),
-            actions=[
-                ft.Container(
-                    content=ft.Row(
-                        controls=[
-                            btn_take_snapshot,
-                            btn_record_toggle,
-                            btn_close_dialog
-                        ],
-                        alignment=ft.MainAxisAlignment.SPACE_EVENLY,
-                    ),
-                    width=620
-                )
-            ],
-            actions_alignment=ft.MainAxisAlignment.CENTER,
-            open=True
-        )
+        threading.Thread(target=_snap_worker, daemon=True).start()
 
-        def _on_close(e=None):
-            modal_running.clear()
-            is_recording.clear()
-            recorder_dialog.open = False
-            update_ui_safely(recorder_dialog)
-            if hasattr(self.page, "overlay") and recorder_dialog in self.page.overlay:
+    def cloud_start_recording_action(self, e=None):
+        """Inicia la acumulación de frames para compilar un recurso GIF animado."""
+        if not self.is_camera_active:
+            show_snack_bar(self.page, "Debe encender la cámara antes de grabar.", is_error=True)
+            return
+        if not self.cloud_active_word:
+            show_snack_bar(self.page, "Seleccione primero una palabra de la tabla para grabar.", is_error=True)
+            return
+
+        self.cloud_recorded_frames.clear()
+        self.is_cloud_recording = True
+        self.btn_cloud_record.disabled = True
+        self.btn_cloud_stop.disabled = False
+        self.btn_cloud_snapshot.disabled = True
+        self.lbl_cloud_cam_status.value = f"🔴 GRABANDO SEÑA PARA '{self.cloud_active_word.upper()}'... Realice la seña."
+        self.lbl_cloud_cam_status.color = "#EF4444"
+        update_ui_safely(self.btn_cloud_record)
+        update_ui_safely(self.btn_cloud_stop)
+        update_ui_safely(self.btn_cloud_snapshot)
+        update_ui_safely(self.lbl_cloud_cam_status)
+
+    def cloud_stop_recording_action(self, e=None):
+        """Detiene la grabación y compila el GIF animado en segundo plano."""
+        if not getattr(self, "is_cloud_recording", False):
+            return
+        self.is_cloud_recording = False
+        self.btn_cloud_stop.disabled = True
+        self.btn_cloud_record.disabled = True
+        self.btn_cloud_snapshot.disabled = True
+        self.progress_cloud_compile.visible = True
+        total_frames = len(self.cloud_recorded_frames)
+        self.lbl_cloud_cam_status.value = f"⏳ Compilando animación GIF ({total_frames} frames)..."
+        self.lbl_cloud_cam_status.color = COLOR_PRIMARY
+        update_ui_safely(self.btn_cloud_stop)
+        update_ui_safely(self.btn_cloud_record)
+        update_ui_safely(self.btn_cloud_snapshot)
+        update_ui_safely(self.progress_cloud_compile)
+        update_ui_safely(self.lbl_cloud_cam_status)
+
+        cat = self.cloud_active_category or (self.cloud_category_dropdown.value or "").lower().strip()
+        word = self.cloud_active_word
+        frames_to_save = list(self.cloud_recorded_frames)
+        self.cloud_recorded_frames.clear()
+
+        def _compile_worker():
+            try:
+                if not frames_to_save:
+                    raise ValueError("No se capturaron frames durante la grabación.")
+                saved_path = self.cloud_service.save_avatar_recording(cat, word, frames_to_save)
+                filename = os.path.basename(saved_path)
+                def _ui_done():
+                    self.progress_cloud_compile.visible = False
+                    self.btn_cloud_record.disabled = False
+                    self.btn_cloud_snapshot.disabled = False
+                    self.lbl_cloud_cam_status.value = f"✅ GIF '{filename}' guardado ({len(frames_to_save)} frames)."
+                    self.lbl_cloud_cam_status.color = COLOR_SUCCESS
+                    update_ui_safely(self.progress_cloud_compile)
+                    update_ui_safely(self.btn_cloud_record)
+                    update_ui_safely(self.btn_cloud_snapshot)
+                    update_ui_safely(self.lbl_cloud_cam_status)
+                    show_snack_bar(self.page, f"Guía didáctica '{filename}' guardada para '{word.upper()}'.")
+                    self.refresh_cloud_resources_table(cat)
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_done)
+                else:
+                    _ui_done()
+            except Exception as ex:
+                def _ui_err():
+                    self.progress_cloud_compile.visible = False
+                    self.btn_cloud_record.disabled = False
+                    self.btn_cloud_snapshot.disabled = False
+                    self.lbl_cloud_cam_status.value = f"Error al compilar animación: {ex}"
+                    self.lbl_cloud_cam_status.color = "#EF4444"
+                    update_ui_safely(self.progress_cloud_compile)
+                    update_ui_safely(self.btn_cloud_record)
+                    update_ui_safely(self.btn_cloud_snapshot)
+                    update_ui_safely(self.lbl_cloud_cam_status)
+                    show_snack_bar(self.page, f"Error al compilar animación: {ex}", is_error=True)
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_err)
+                else:
+                    _ui_err()
+
+        threading.Thread(target=_compile_worker, daemon=True).start()
+
+    def cloud_preview_action(self, e=None):
+        """Abre la vista previa del recurso multimedia activo."""
+        if not self.cloud_active_word:
+            show_snack_bar(self.page, "Seleccione primero una palabra de la tabla para ver su vista previa.", is_error=True)
+            return
+        cat = self.cloud_active_category or (self.cloud_category_dropdown.value or "").lower().strip()
+        self.open_local_media_preview(cat, self.cloud_active_word)
+
+    def start_voice_commands_listener(self):
+        """Inicia el hilo cooperativo asíncrono de reconocimiento de voz usando speech_recognition."""
+        if sr is None:
+            self.lbl_voice_command_status.value = "⚠️ SpeechRecognition no instalado (Use botones manuales)"
+            self.lbl_voice_command_status.color = ft.Colors.AMBER_800
+            update_ui_safely(self.lbl_voice_command_status)
+            return
+
+        if getattr(self, "voice_listener_running", False):
+            return
+
+        self.voice_listener_running = True
+        self.lbl_voice_command_status.value = "🎙️ Micrófono Activo: Esperando comando ('captura', 'grabar', 'no grabes')..."
+        self.lbl_voice_command_status.color = COLOR_PRIMARY
+        update_ui_safely(self.lbl_voice_command_status)
+
+        threading.Thread(target=self.listen_voice_commands, daemon=True).start()
+
+    def listen_voice_commands(self):
+        """Hilo en segundo plano para escuchar comandos de voz manos libres en español (speech_recognition)."""
+        recognizer = sr.Recognizer()
+        recognizer.dynamic_energy_threshold = True
+
+        try:
+            with sr.Microphone() as source:
                 try:
-                    self.page.overlay.remove(recorder_dialog)
+                    recognizer.adjust_for_ambient_noise(source, duration=0.5)
                 except Exception:
                     pass
-            # Restaurar la cámara principal si estaba en marcha antes de abrir el modal
-            if was_main_cam_running:
-                def _restart_main_cam():
-                    time.sleep(0.3)
-                    self.vision_service.start()
-                threading.Thread(target=_restart_main_cam, daemon=True).start()
 
-        def _on_record_toggle(e=None):
-            if not is_recording.is_set():
-                # Iniciar grabación
-                buffer_frames.clear()
-                is_recording.set()
-                btn_record_toggle.content = "Detener y Guardar"
-                btn_record_toggle.icon = ft.Icons.STOP
-                btn_record_toggle.bgcolor = "#DC2626"
-                btn_take_snapshot.disabled = True
-                lbl_modal_status.value = "🔴 GRABANDO AVATAR... Realice la seña didáctica"
-                lbl_modal_status.color = "#EF4444"
-                lbl_modal_counter.value = "0 frames grabados"
-                update_ui_safely(btn_record_toggle)
-                update_ui_safely(btn_take_snapshot)
-                update_ui_safely(lbl_modal_status)
-                update_ui_safely(lbl_modal_counter)
-            else:
-                # Detener grabación y procesar animación GIF
-                is_recording.clear()
-                btn_record_toggle.disabled = True
-                btn_record_toggle.content = "Compilando..."
-                btn_record_toggle.icon = ft.Icons.HOURGLASS_EMPTY
-                lbl_modal_status.value = f"⏳ Compilando animación GIF ({len(buffer_frames)} frames)..."
-                lbl_modal_status.color = COLOR_PRIMARY
-                progress_compile.visible = True
-                update_ui_safely(btn_record_toggle)
-                update_ui_safely(lbl_modal_status)
-                update_ui_safely(progress_compile)
-
-                def _save_worker():
+                while getattr(self, "is_camera_active", False) and getattr(self, "voice_listener_running", False):
                     try:
-                        if not buffer_frames:
-                            raise ValueError("No se registraron frames durante la grabación.")
-                        frames_to_save = list(buffer_frames)
-                        saved_path = self.cloud_service.save_avatar_recording(cat_clean, word_clean, frames_to_save)
-                        filename = os.path.basename(saved_path)
-
-                        def _ui_done():
-                            progress_compile.visible = False
-                            lbl_modal_status.value = f"✅ GIF '{filename}' guardado con éxito ({len(frames_to_save)} frames)."
-                            lbl_modal_status.color = COLOR_SUCCESS
-                            btn_record_toggle.disabled = False
-                            btn_record_toggle.content = "Grabar GIF/Video"
-                            btn_record_toggle.icon = ft.Icons.RADIO_BUTTON_CHECKED
-                            btn_record_toggle.bgcolor = "#EF4444"
-                            btn_take_snapshot.disabled = False
-                            update_ui_safely(progress_compile)
-                            update_ui_safely(lbl_modal_status)
-                            update_ui_safely(btn_record_toggle)
-                            update_ui_safely(btn_take_snapshot)
-                            show_snack_bar(self.page, f"Avatar didáctico '{filename}' guardado para '{word.upper()}'.")
-                            self.refresh_cloud_resources_table(category)
-
-                        if self.page and hasattr(self.page, "run_thread"):
-                            self.page.run_thread(_ui_done)
-                        else:
-                            _ui_done()
-                    except Exception as ex:
-                        def _ui_err():
-                            progress_compile.visible = False
-                            lbl_modal_status.value = f"Error al compilar GIF: {ex}"
-                            lbl_modal_status.color = "#EF4444"
-                            btn_record_toggle.disabled = False
-                            btn_record_toggle.content = "Grabar GIF/Video"
-                            btn_record_toggle.icon = ft.Icons.RADIO_BUTTON_CHECKED
-                            btn_record_toggle.bgcolor = "#EF4444"
-                            btn_take_snapshot.disabled = False
-                            update_ui_safely(progress_compile)
-                            update_ui_safely(lbl_modal_status)
-                            update_ui_safely(btn_record_toggle)
-                            update_ui_safely(btn_take_snapshot)
-                            show_snack_bar(self.page, f"Error al guardar GIF: {ex}", is_error=True)
-                        if self.page and hasattr(self.page, "run_thread"):
-                            self.page.run_thread(_ui_err)
-                        else:
-                            _ui_err()
-
-                threading.Thread(target=_save_worker, daemon=True).start()
-
-        def _on_snapshot(e=None):
-            if last_rendered_frame[0] is None:
-                show_snack_bar(self.page, "No hay frame disponible para capturar.", is_error=True)
-                return
-            frame_to_save = last_rendered_frame[0].copy()
-
-            def _snap_worker():
-                try:
-                    saved_path = self.cloud_service.save_avatar_snapshot(cat_clean, word_clean, frame_to_save)
-                    filename = os.path.basename(saved_path)
-
-                    def _ui_snap_done():
-                        lbl_modal_status.value = f"✅ Foto PNG '{filename}' guardada con éxito."
-                        lbl_modal_status.color = COLOR_SUCCESS
-                        update_ui_safely(lbl_modal_status)
-                        show_snack_bar(self.page, f"Foto '{filename}' guardada para '{word.upper()}'.")
-                        self.refresh_cloud_resources_table(category)
-
-                    if self.page and hasattr(self.page, "run_thread"):
-                        self.page.run_thread(_ui_snap_done)
-                    else:
-                        _ui_snap_done()
-                except Exception as ex:
-                    show_snack_bar(self.page, f"Error al guardar foto: {ex}", is_error=True)
-
-            threading.Thread(target=_snap_worker, daemon=True).start()
-
-        btn_record_toggle.on_click = _on_record_toggle
-        btn_take_snapshot.on_click = _on_snapshot
-        btn_close_dialog.on_click = _on_close
-
-        def _camera_worker():
-            # Pausa breve para garantizar que el controlador de hardware en Windows libere el puerto
-            time.sleep(0.3)
-            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY)
-            if not cap.isOpened():
-                cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                def _ui_no_cam():
-                    lbl_modal_status.value = "⚠️ No se pudo acceder a la cámara web."
-                    lbl_modal_status.color = "#EF4444"
-                    update_ui_safely(lbl_modal_status)
-                if self.page and hasattr(self.page, "run_thread"):
-                    self.page.run_thread(_ui_no_cam)
-                else:
-                    _ui_no_cam()
-                return
-
-            def _ui_cam_ready():
-                lbl_modal_status.value = "Cámara activa • Avatar pedagógico proyectándose en tiempo real"
-                lbl_modal_status.color = COLOR_PRIMARY
-                update_ui_safely(lbl_modal_status)
-            if self.page and hasattr(self.page, "run_thread"):
-                self.page.run_thread(_ui_cam_ready)
-            else:
-                _ui_cam_ready()
-
-            while modal_running.is_set():
-                try:
-                    ret, frame = cap.read()
-                    if not ret or frame is None:
-                        time.sleep(0.03)
-                        continue
-
-                    frame = cv2.flip(frame, 1)
-                    h, w, _ = frame.shape
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-                    landmarks = None
-                    holistic_res = None
-                    if hasattr(self.vision_service, "normalizer") and self.vision_service.normalizer:
+                        audio = recognizer.listen(source, timeout=1, phrase_time_limit=2)
+                        command = ""
                         try:
-                            landmarks = self.vision_service.normalizer.extract_landmarks(frame_rgb)
-                            holistic_res = getattr(self.vision_service.normalizer, 'last_results', None)
+                            command = recognizer.recognize_google(audio, language="es-PE").lower()
                         except Exception:
-                            landmarks = None
-
-                    # Renderizar avatar sobre fondo blanco-celeste escolar #F4F8FA
-                    avatar_frame = self.vision_service.render_privacy_avatar(
-                        w, h, landmarks=landmarks, holistic_results=holistic_res
-                    )
-                    last_rendered_frame[0] = avatar_frame.copy()
-
-                    display_frame = avatar_frame.copy()
-                    if is_recording.is_set():
-                        buffer_frames.append(avatar_frame.copy())
-                        cnt = len(buffer_frames)
-                        # Distintivo visual de grabación activa en la pantalla del visor
-                        cv2.circle(display_frame, (30, 30), 10, (0, 0, 220), -1)
-                        cv2.putText(display_frame, f"REC {cnt}", (48, 36),
-                                    cv2.FONT_HERSHEY_DUPLEX, 0.55, (0, 0, 220), 1, cv2.LINE_AA)
-
-                        if cnt % 4 == 0:
-                            lbl_modal_counter.value = f"{cnt} frames grabados"
                             try:
-                                lbl_modal_counter.update()
+                                command = recognizer.recognize_google(audio, language="es-ES").lower()
                             except Exception:
                                 pass
 
-                    # Actualización asíncrona directa y ultra-segura del visor
-                    ret_enc, enc_buf = cv2.imencode(".jpg", display_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
-                    if ret_enc:
-                        b64_str = base64.b64encode(enc_buf).decode("utf-8")
-                        img_visor.src_base64 = b64_str
-                        img_visor.src = f"data:image/jpeg;base64,{b64_str}"
-                        try:
-                            img_visor.update()
-                        except Exception:
-                            pass
+                        if not command:
+                            continue
 
-                    time.sleep(0.04)
-                except Exception as ex:
-                    print(f"[AVATAR CAM] Error en bucle de captura: {ex}")
-                    time.sleep(0.03)
-                    continue
+                        print(f"[VOICE COMMAND] Detectado: '{command}'")
 
-            cap.release()
+                        def _notify(cmd_text):
+                            self.lbl_voice_command_status.value = f"🎙️ Voz detectada: '{cmd_text}'"
+                            self.lbl_voice_command_status.color = COLOR_SUCCESS
+                            update_ui_safely(self.lbl_voice_command_status)
 
-        threading.Thread(target=_camera_worker, daemon=True).start()
+                        if "captura" in command or "foto" in command:
+                            if self.page and hasattr(self.page, "run_thread"):
+                                self.page.run_thread(_notify, "Foto / Captura")
+                                self.page.run_thread(self.cloud_take_photo_action, None)
+                            else:
+                                _notify("Foto / Captura")
+                                self.cloud_take_photo_action(None)
+                        elif "grabar" in command or "graba" in command:
+                            if self.page and hasattr(self.page, "run_thread"):
+                                self.page.run_thread(_notify, "Grabar")
+                                self.page.run_thread(self.cloud_start_recording_action, None)
+                            else:
+                                _notify("Grabar")
+                                self.cloud_start_recording_action(None)
+                        elif "no grabes" in command or "detener" in command or "alto" in command or "parar" in command:
+                            if self.page and hasattr(self.page, "run_thread"):
+                                self.page.run_thread(_notify, "Detener")
+                                self.page.run_thread(self.cloud_stop_recording_action, None)
+                            else:
+                                _notify("Detener")
+                                self.cloud_stop_recording_action(None)
 
-        if hasattr(self.page, "overlay") and self.page.overlay is not None:
-            self.page.overlay.append(recorder_dialog)
-            self.page.update()
+                    except (sr.WaitTimeoutError, sr.UnknownValueError):
+                        continue
+                    except sr.RequestError as re:
+                        print(f"[VOICE COMMAND] Error de conexión Google Speech: {re}")
+                        time.sleep(1)
+                    except Exception as loop_ex:
+                        time.sleep(0.5)
+
+        except Exception as ex:
+            print(f"[VOICE COMMAND] Error o micrófono no disponible: {ex}")
+            def _show_mic_err():
+                self.lbl_voice_command_status.value = "⚠️ Micrófono no detectado (Use botones manuales)"
+                self.lbl_voice_command_status.color = ft.Colors.AMBER_800
+                update_ui_safely(self.lbl_voice_command_status)
+            if self.page and hasattr(self.page, "run_thread"):
+                self.page.run_thread(_show_mic_err)
+            else:
+                _show_mic_err()
+        finally:
+            self.voice_listener_running = False
+
+    def stop_voice_commands_listener(self):
+        """Detiene de forma cooperativa el hilo de reconocimiento de voz."""
+        self.voice_listener_running = False
+        if hasattr(self, "lbl_voice_command_status") and self.lbl_voice_command_status:
+            self.lbl_voice_command_status.value = "🎙️ Micrófono inactivo."
+            self.lbl_voice_command_status.color = COLOR_TEXT_MUTED
+            update_ui_safely(self.lbl_voice_command_status)
 
     def open_local_media_preview(self, category: str, word: str):
         """Muestra una ventana modal emergente con el GIF o imagen del avatar grabado localmente."""
@@ -2704,11 +2940,11 @@ def build_training_view(controller: LSPUIController) -> ft.Container:
                 ], spacing=6)
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             
-            # Imagen de la Cámara
+            # Imagen de la Cámara Estandarizada (640x480)
             ft.Container(
                 content=ft.Column([
                     controller.warning_banner,
-                    controller.camera_view
+                    controller.camera_container_train
                 ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=2),
                 alignment=ft.Alignment.CENTER
             ),
@@ -2757,7 +2993,6 @@ def build_training_view(controller: LSPUIController) -> ft.Container:
             monitor_camara,
             ft.Row([
                 controller.btn_camera,
-                controller.switch_avatar,
                 controller.btn_generate_cnn
             ], alignment=ft.MainAxisAlignment.CENTER, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=14)
         ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
@@ -2779,7 +3014,7 @@ def build_live_testing_view(controller: LSPUIController) -> ft.Container:
     - Columna izquierda: Selección de modelo + Lista de señas registradas + Info técnica.
     - Columna derecha: Monitor 640x310 con HUD de prueba + Tarjeta gigante con tipografía 45px y barra de confianza.
     """
-    # 1. Card 1: Seleccionar Categoría
+    # 1. Card 1: Seleccionar Categoría y Controles de Cámara / Avatar
     card_select = ft.Container(
         content=ft.Column([
             ft.Row([
@@ -2802,12 +3037,15 @@ def build_live_testing_view(controller: LSPUIController) -> ft.Container:
                 )
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             controller.test_category_dropdown,
-            controller.btn_toggle_test
+            ft.Row([
+                controller.btn_toggle_test,
+                controller.btn_test_camera
+            ], spacing=6)
         ], spacing=8),
         bgcolor=COLOR_CARD_BG,
         border=ft.Border.all(1, COLOR_BORDER),
         border_radius=12,
-        padding=12
+        padding=10
     )
 
     # 2. Card 2: Señas Registradas (con scroll)
@@ -2829,7 +3067,7 @@ def build_live_testing_view(controller: LSPUIController) -> ft.Container:
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             ft.Container(
                 content=controller.test_classes_listview,
-                height=230,
+                height=185,
                 border=ft.Border.all(1, COLOR_BORDER),
                 border_radius=8,
                 padding=6
@@ -2887,9 +3125,9 @@ def build_live_testing_view(controller: LSPUIController) -> ft.Container:
                 ft.Text("FPS: 25.0   Resolución: 640x480", size=10, color="#94A3B8")
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             
-            # Imagen de video
+            # Imagen de video Estandarizada (640x480)
             ft.Container(
-                content=controller.test_camera_view,
+                content=controller.camera_container_test,
                 alignment=ft.Alignment.CENTER
             ),
 
@@ -3004,13 +3242,21 @@ def build_live_testing_view(controller: LSPUIController) -> ft.Container:
 def build_cloud_view(controller: LSPUIController) -> ft.Container:
     """
     Construye la vista de Sincronización Nube (AWS S3) y Gestión de Recursos Didácticos:
-    1. Selector de Categoría Activa: Dropdown superior con botón Refrescar y Badge del Bucket.
-    2. Panel de Modelo (Cabecera): Tarjeta compacta para compilar y sincronizar el modelo TF.js en S3.
-    3. Sección: Gestión de Recursos Didácticos (Guías de Señas):
-       Tabla interactiva de palabras con estado local (guia.gif / guia.png), badge de S3 y acciones.
-    4. Consola de Transferencia Inferior: Barra de progreso en tiempo real y mensajes.
+    Layout estático de dos columnas (ft.Row):
+    - Columna Izquierda (Ancho: 600px):
+        1. Panel de Modelo Web TensorFlow.js
+        2. Tabla interactiva de palabras y recursos didácticos
+        3. Consola de sincronización y transferencia
+    - Columna Derecha (Flexible, expand=True):
+        Sección "Captura del Tutor Inteligente (Avatar / Persona)":
+        1. Header con estado y palabra activa seleccionada
+        2. Visor de video estático (controller.cloud_camera_image) en contenedor monitor oscuro
+        3. Barra de progreso de compilación GIF
+        4. Fila con botón Encender Cámara y Switch Avatar de Privacidad
+        5. Fila de 4 botones distribuidos proporcionalmente: [Tomar Foto, Grabar, Detener, Ver Vista Previa]
+        6. Indicador visual de escucha de comandos de voz en segundo plano
     """
-    # 1. Encabezado de Nube con Selector de Categoría Activa
+    # Encabezado superior de Nube con selector y bucket
     card_header = ft.Container(
         content=ft.Row([
             ft.Row([
@@ -3052,13 +3298,20 @@ def build_cloud_view(controller: LSPUIController) -> ft.Container:
         padding=12
     )
 
-    # 2. Panel de Modelo (Cabecera)
+    # 1. Columna Izquierda (Ancho: 600px): Modelo + Recursos Didácticos + Consola
     card_model = ft.Container(
         content=ft.Column([
             ft.Row([
                 ft.Row([
                     ft.Icon(ft.Icons.MEMORY, color=COLOR_PRIMARY, size=18),
-                    ft.Text("1. Modelo Predictivo Web (TensorFlow.js)", size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+                    ft.Text(
+                        "1. Modelo Predictivo Web (TensorFlow.js)",
+                        size=13,
+                        weight=ft.FontWeight.BOLD,
+                        color=COLOR_TEXT_TITLE,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                        max_lines=1
+                    )
                 ], spacing=6),
                 ft.Container(
                     content=ft.Text("MOTOR INFERENCIA WEB", size=9, weight=ft.FontWeight.BOLD, color=COLOR_PRIMARY),
@@ -3072,18 +3325,18 @@ def build_cloud_view(controller: LSPUIController) -> ft.Container:
         bgcolor=COLOR_CARD_BG,
         border=ft.Border.all(1, COLOR_BORDER),
         border_radius=12,
-        padding=12
+        padding=15,
+        width=600
     )
 
-    # 3. Sección: Gestión de Recursos Didácticos (Guías de Señas)
     table_header = ft.Container(
         content=ft.Row([
-            ft.Container(ft.Text("PALABRA / SEÑA", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=160),
-            ft.Container(ft.Text("ESTADO LOCAL", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=170),
-            ft.Container(ft.Text("ESTADO EN AWS S3", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=150),
-            ft.Container(ft.Text("ACCIONES MULTIMEDIA Y NUBE", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), expand=True)
+            ft.Container(ft.Text("PALABRA", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=110),
+            ft.Container(ft.Text("LOCAL", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=105),
+            ft.Container(ft.Text("AWS S3", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=105),
+            ft.Container(ft.Text("ACCIONES MULTIMEDIA", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), expand=True)
         ], alignment=ft.MainAxisAlignment.START),
-        padding=ft.Padding(12, 6, 12, 6),
+        padding=ft.Padding(8, 6, 8, 6),
         bgcolor="#F8FAFC",
         border_radius=8
     )
@@ -3095,7 +3348,7 @@ def build_cloud_view(controller: LSPUIController) -> ft.Container:
                     ft.Icon(ft.Icons.VIDEO_LIBRARY_OUTLINED, color=COLOR_PRIMARY, size=18),
                     ft.Text("2. Gestión de Recursos Didácticos (Guías de Señas)", size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
                 ], spacing=6),
-                ft.Text("S3: recursos/{categoria}/{palabra}_avatar.[ext]", size=11, color=COLOR_TEXT_MUTED)
+                ft.Text("S3: recursos/{cat}/{palabra}_avatar", size=10, color=COLOR_TEXT_MUTED)
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             table_header,
             ft.Container(
@@ -3103,15 +3356,13 @@ def build_cloud_view(controller: LSPUIController) -> ft.Container:
                 height=260,
                 padding=2
             )
-        ], spacing=8),
+        ], spacing=6),
         bgcolor=COLOR_CARD_BG,
         border=ft.Border.all(1, COLOR_BORDER),
         border_radius=12,
-        padding=12,
-        expand=True
+        padding=12
     )
 
-    # 4. Consola de Transferencia Inferior
     card_console = ft.Container(
         content=ft.Column([
             ft.Row([
@@ -3126,12 +3377,92 @@ def build_cloud_view(controller: LSPUIController) -> ft.Container:
         padding=10
     )
 
+    columna_izquierda_s3 = ft.Column([
+        card_model,
+        card_resources,
+        card_console
+    ], spacing=10, width=600)
+
+    # 2. Columna Derecha (Flexible): Captura del Tutor Inteligente (Avatar / Persona)
+    monitor_cloud = ft.Container(
+        content=ft.Column([
+            ft.Row([
+                ft.Row([
+                    ft.Container(width=7, height=7, bgcolor="#10B981", border_radius=4),
+                    ft.Text("STREAM TUTOR DIDÁCTICO - CAPTURA DIRECTA", size=10, weight=ft.FontWeight.BOLD, color="#94A3B8")
+                ], spacing=6),
+                ft.Text("FPS: 25.0  •  Resolución: 640x480", size=10, color="#94A3B8")
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Container(
+                content=controller.camera_container_cloud,
+                alignment=ft.Alignment.CENTER
+            ),
+            controller.progress_cloud_compile,
+            ft.Row([
+                controller.lbl_cloud_cam_status
+            ], alignment=ft.MainAxisAlignment.START)
+        ], spacing=6),
+        bgcolor=COLOR_DARK_MONITOR,
+        border=ft.Border.all(2, COLOR_BORDER),
+        border_radius=12,
+        padding=10
+    )
+
+    card_captura_s3 = ft.Container(
+        content=ft.Column([
+            ft.Row([
+                ft.Row([
+                    ft.Icon(ft.Icons.VIDEOCAM_ROUNDED, color=COLOR_PRIMARY, size=20),
+                    ft.Text("Captura del Tutor Inteligente (Avatar / Persona)", size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+                ], spacing=6),
+                ft.Container(
+                    content=controller.lbl_cloud_active_word,
+                    bgcolor=COLOR_PRIMARY_LIGHT,
+                    border_radius=6,
+                    padding=ft.Padding(8, 4, 8, 4)
+                )
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            monitor_cloud,
+            ft.Row([
+                controller.btn_cloud_camera,
+                controller.switch_cloud_avatar
+            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Row([
+                controller.btn_cloud_snapshot,
+                controller.btn_cloud_record,
+                controller.btn_cloud_stop,
+                controller.btn_cloud_preview
+            ], spacing=8, wrap=True),
+            ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.MIC_NONE, size=16, color=COLOR_PRIMARY),
+                    controller.lbl_voice_command_status
+                ], spacing=6),
+                bgcolor=COLOR_PRIMARY_LIGHT,
+                border=ft.Border.all(1, "#BAE6FD"),
+                border_radius=8,
+                padding=ft.Padding(10, 6, 10, 6)
+            )
+        ], spacing=10),
+        bgcolor=COLOR_CARD_BG,
+        border=ft.Border.all(1, COLOR_BORDER),
+        border_radius=12,
+        padding=14,
+        expand=True
+    )
+
+    columna_derecha_s3 = ft.Container(
+        content=card_captura_s3,
+        expand=True
+    )
+
     return ft.Container(
         content=ft.Column([
             card_header,
-            card_model,
-            card_resources,
-            card_console
+            ft.Row([
+                columna_izquierda_s3,
+                columna_derecha_s3
+            ], spacing=14, expand=True, vertical_alignment=ft.CrossAxisAlignment.START)
         ], spacing=10, expand=True),
         padding=0
     )

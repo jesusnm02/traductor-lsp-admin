@@ -116,11 +116,13 @@ class LSPUIController:
         self.cloud_statuses = {}
 
         # FilePicker para asociación de recursos didácticos
-        self.file_picker = ft.FilePicker(on_result=self.on_file_picker_result)
+        self.file_picker = ft.FilePicker()
+        self.file_picker.on_result = self.on_file_picker_result
         self._picking_target_category = None
         self._picking_target_word = None
         if hasattr(self.page, "overlay") and self.page.overlay is not None:
-            self.page.overlay.append(self.file_picker)
+            if self.file_picker not in self.page.overlay:
+                self.page.overlay.append(self.file_picker)
 
         # Estados de la UI
         self.selected_category = None

@@ -5,24 +5,38 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout
 from tensorflow.keras.utils import to_categorical
 
+SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(SRC_DIR)
+DATA_DIR = os.path.join(ROOT_DIR, "data")
+MODELOS_DIR = os.path.join(DATA_DIR, "modelos")
+
+os.makedirs(MODELOS_DIR, exist_ok=True)
+
 class ModelTrainer:
     """
     Módulo de Entrenamiento: Red Neuronal Convolucional 1D (CNN Espacio-Temporal).
-    Captura relaciones espaciales y temporales de las 30 secuencias de landmarks normalizados.
-    Exporta de forma unificada bajo 'data/modelos/{category}/' con formato nativo 'model.keras'.
+    Captura relaciones espaciales y temporales de las secuencias de landmarks normalizados.
+    Exporta de forma unificada bajo ruta absoluta 'data/modelos/{category}/' con formato nativo 'model.keras'.
     """
-    def __init__(self, dataset_manager=None, sequence_length=30, features=255, export_base_dir="data/modelos"):
+    def __init__(self, dataset_manager=None, sequence_length=30, features=255, export_base_dir=None):
         self.dataset_manager = dataset_manager
         self.sequence_length = sequence_length
         self.features = features
-        self.export_base_dir = export_base_dir
+        
+        if export_base_dir is None:
+            self.export_base_dir = MODELOS_DIR
+        elif not os.path.isabs(export_base_dir):
+            self.export_base_dir = os.path.join(ROOT_DIR, export_base_dir)
+        else:
+            self.export_base_dir = export_base_dir
+
         os.makedirs(self.export_base_dir, exist_ok=True)
 
     def build_and_train_cnn(self, X_train, y_train, num_classes, category_name, epochs=50, batch_size=16, label_map=None):
         """
         Construye, compila y entrena la CNN 1D para la categoría especificada.
-        Exporta el modelo entrenado a 'data/modelos/{category_name}/model.keras'
-        y el mapa de etiquetas a 'data/modelos/{category_name}/labels.json'.
+        Exporta el modelo entrenado a '{export_base_dir}/{category_name}/model.keras'
+        y el mapa de etiquetas a '{export_base_dir}/{category_name}/labels.json'.
         """
         if X_train.ndim == 3:
             self.sequence_length = X_train.shape[1]
@@ -49,14 +63,15 @@ class ModelTrainer:
         # Entrenamiento
         history = model.fit(X_train, y_cat, epochs=epochs, validation_split=0.2, batch_size=batch_size)
         
-        # Guardar de forma unificada bajo data/modelos/{category}/model.keras
-        category_export_path = os.path.join(self.export_base_dir, category_name.lower().strip())
+        # Guardar de forma unificada bajo ruta absoluta
+        clean_cat = category_name.lower().strip()
+        category_export_path = os.path.join(self.export_base_dir, clean_cat)
         os.makedirs(category_export_path, exist_ok=True)
         keras_model_path = os.path.join(category_export_path, "model.keras")
         
         # Guardar de forma nativa en Keras
         model.save(keras_model_path)
-        print(f"[ENTRENAMIENTO] Modelo guardado en formato moderno: {keras_model_path}")
+        print(f"[ENTRENAMIENTO] Modelo guardado en formato moderno absoluto: {keras_model_path}")
 
         # Guardar mapa de etiquetas asociado para inferencia en tiempo real
         if label_map:
@@ -67,5 +82,5 @@ class ModelTrainer:
 
         return keras_model_path
 
-# Alias de compatibilidad para unificación en app.py
+# Alias de compatibilidad para unificación
 LSPTrainer = ModelTrainer

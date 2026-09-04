@@ -2,26 +2,41 @@ import os
 import glob
 import json
 import threading
+import time
 import flet as ft
 from src.data_manager import LSPDataManager, LSPDatasetManager
 from src.vision_service import LSPVisionService
 from src.model_trainer import ModelTrainer, LSPTrainer
 from src.voice_service import LSPVoiceService
-from src.tester_service import LSPTesterService, LiveTester, cargar_modelo_de_pruebas
+from src.tester_service import LSPTesterService, LiveTester, cargar_modelo_de_pruebas, show_error_popup
+from src.cloud_service import LSPCloudService
+
+SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(SRC_DIR)
+DATA_DIR = os.path.join(ROOT_DIR, "data")
+MUESTRAS_DIR = os.path.join(DATA_DIR, "muestras")
+MODELOS_DIR = os.path.join(DATA_DIR, "modelos")
+
+os.makedirs(MUESTRAS_DIR, exist_ok=True)
+os.makedirs(MODELOS_DIR, exist_ok=True)
 
 EMPTY_PIXEL_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 
-# Paleta Cromática Escolar (Celeste y Blanco)
-COLOR_BG_PAGE = "#F4F8FA"         # Fondo suave blanco/gris azulado
+# =========================================================================
+# PALETA CROMÁTICA ESCOLAR (STITCH UI DESIGN SYSTEM)
+# =========================================================================
+COLOR_BG_PAGE = "#F4F8FA"         # Fondo suave gris blanco-azulado
 COLOR_CARD_BG = "#FFFFFF"         # Fondo de tarjetas blanco puro
-COLOR_BORDER = "#D1E4F8"          # Borde celeste claro
-COLOR_PRIMARY = "#4A90E2"         # Celeste escolar principal
-COLOR_TEXT_TITLE = "#1A365D"      # Azul oscuro académico
+COLOR_BORDER = "#D1E4F8"          # Borde celeste institucional
+COLOR_PRIMARY = "#0A66C2"         # Azul/celeste de acción principal
+COLOR_PRIMARY_LIGHT = "#EBF4FF"   # Fondo celeste pastel para insignias y banners
+COLOR_TEXT_TITLE = "#1A365D"      # Azul marino académico para títulos
 COLOR_TEXT_BODY = "#2D3748"       # Gris carbón para texto general
-COLOR_TEXT_MUTED = "#718096"      # Gris suave para texto secundario
-COLOR_STATUS_BG = "#EBF4FF"       # Azul pastel suave para barra de estado
-COLOR_REC_BTN = "#E25C5C"         # Rojo amigable para grabación
-COLOR_SUCCESS = "#2E7D32"         # Verde pedagógico para éxito
+COLOR_TEXT_MUTED = "#64748B"      # Gris suave para metadatos y rangos
+COLOR_REC_BTN = "#E25C5C"         # Rojo amigable para captura/peligro
+COLOR_SUCCESS = "#2E7D32"         # Verde pedagógico para 30/30 completado
+COLOR_AMBER = "#D97706"           # Ámbar/naranja para señas en progreso
+COLOR_DARK_MONITOR = "#0B0F19"    # Fondo negro azulado para monitores de cámara
 
 def update_ui_safely(control):
     """
@@ -35,7 +50,6 @@ def update_ui_safely(control):
             control.update()
     except RuntimeError as e:
         if "destroyed session" in str(e).lower():
-            # Ignorar de forma segura si la ventana fue cerrada por el docente
             pass
     except Exception:
         pass
@@ -70,26 +84,33 @@ def show_snack_bar(page: ft.Page, message: str, is_error: bool = False):
 
 class LSPUIController:
     """
-    Controlador central de la interfaz escolar de administración para Traductor LSP (v4).
-    - Unificación absoluta bajo la carpeta 'data/':
-        - Muestras: data/muestras/{categoria}/{palabra}/
-        - Modelos: data/modelos/{categoria}/model.keras y labels.json
-    - Carga estricta y desacoplada de modelos Keras (.keras nativo) y etiquetas JSON sin errores UTF-8.
-    - Protección contra crashes por sesiones destruidas de Flet (update_ui_safely).
-    - Navegación por pestañas nativas ft.Tabs visible y con prevención de colisiones de cámara.
-    - Lista de palabras en contenedor con scroll vertical fluido (height=240, ScrollMode.ALWAYS).
-    - Deslizadores de configuración reubicados en la parte inferior del panel izquierdo.
+    Controlador central de la interfaz escolar de administración para Traductor LSP.
+    Implementación píxel a píxel del diseño de referencia de Google Stitch:
+    - Pestaña 1 (Captura/Entrenamiento): 3 tarjetas laterales estructuradas + monitor 640x440 con overlays HUD.
+    - Pestaña 2 (Pruebas en Vivo): Sub-banner activo, 3 tarjetas laterales + tarjeta de traducción gigante con tipografía 45px.
     """
     def __init__(self, page: ft.Page, data_manager: LSPDataManager, vision_service: LSPVisionService, trainer=None, tester_service=None):
         self.page = page
-        self.data_manager = data_manager if data_manager is not None else LSPDatasetManager(base_dir="data/muestras")
+        self.data_manager = data_manager if data_manager is not None else LSPDatasetManager(base_dir=MUESTRAS_DIR)
         self.vision_service = vision_service
-        self.trainer = trainer if trainer is not None else LSPTrainer(self.data_manager, export_base_dir="data/modelos")
-        self.model_trainer = ModelTrainer(dataset_manager=self.data_manager, sequence_length=30, features=255, export_base_dir="data/modelos")
-        self.live_tester = tester_service if tester_service is not None else LSPTesterService(model_base_dir="data/modelos", page_ref=page)
+        self.trainer = trainer if trainer is not None else LSPTrainer(self.data_manager, export_base_dir=MODELOS_DIR)
+        self.model_trainer = ModelTrainer(dataset_manager=self.data_manager, sequence_length=30, features=255, export_base_dir=MODELOS_DIR)
+        self.live_tester = tester_service if tester_service is not None else LSPTesterService(model_base_dir=MODELOS_DIR, page_ref=page)
+        self.cloud_service = LSPCloudService(modelos_dir=MODELOS_DIR)
 
-        # Referencia a pestañas para control de contexto
+        # Referencias de control de pestañas y botones superiores de modo
         self.tabs = None
+        self.btn_mode_train = None
+        self.btn_mode_test = None
+        self.btn_mode_cloud = None
+        self.test_model_banner = None
+
+        # Controles y estado de Sincronización en la Nube (AWS S3)
+        self.cloud_categories_listview = ft.ListView(expand=True, spacing=6, padding=4)
+        self.cloud_progress_bar = ft.ProgressBar(value=0.0, color=COLOR_PRIMARY, bgcolor="#E2E8F0", height=6, border_radius=3, visible=False)
+        self.lbl_cloud_status = ft.Text("Consola de Transferencia: Listo para sincronizar modelos con AWS S3.", size=12, weight=ft.FontWeight.W_500, color=COLOR_TEXT_TITLE, expand=True)
+        self.cloud_progress_ring = ft.ProgressRing(width=16, height=16, stroke_width=2, color=COLOR_PRIMARY, visible=False)
+        self.cloud_statuses = {}
 
         # Estados de la UI
         self.selected_category = None
@@ -122,65 +143,70 @@ class LSPUIController:
         self.vision_service.video_image_control = self.camera_view
 
     def _init_controls(self):
-        # 1. Controles de Categoría
+        # 1. Controles de Categoría (Card 1)
         self.new_category_input = ft.TextField(
-            label="Nombre de Categoría",
-            width=200,
+            hint_text="Nueva categoría...",
             text_size=12,
             bgcolor="#FFFFFF",
             border_color=COLOR_BORDER,
             focused_border_color=COLOR_PRIMARY,
-            label_style=ft.TextStyle(color=COLOR_TEXT_MUTED),
             color=COLOR_TEXT_TITLE,
-            height=40
+            height=38,
+            expand=True,
+            border_radius=8,
+            content_padding=ft.Padding(10, 8, 10, 8)
         )
         self.category_dropdown = ft.Dropdown(
-            label="Categoría de Señas",
-            hint_text="Seleccione categoría",
-            width=250,
+            hint_text="Seleccionar categoría activa...",
+            text_size=12,
             bgcolor="#FFFFFF",
             border_color=COLOR_BORDER,
             focused_border_color=COLOR_PRIMARY,
-            label_style=ft.TextStyle(color=COLOR_TEXT_MUTED),
             color=COLOR_TEXT_TITLE,
-            height=40,
+            height=38,
+            expand=True,
+            border_radius=8,
+            content_padding=ft.Padding(10, 0, 10, 0),
             on_select=lambda e: self.on_category_changed(e.control.value)
         )
         self.btn_edit_category = ft.IconButton(
-            icon=ft.Icons.EDIT,
+            icon=ft.Icons.EDIT_OUTLINED,
             tooltip="Editar nombre de categoría",
             icon_color=COLOR_PRIMARY,
-            icon_size=20,
+            icon_size=18,
             on_click=self.show_edit_category_dialog
         )
         self.btn_delete_category = ft.IconButton(
             icon=ft.Icons.DELETE_OUTLINE,
             tooltip="Eliminar categoría",
             icon_color=COLOR_REC_BTN,
-            icon_size=20,
+            icon_size=18,
             on_click=self.on_delete_category_clicked
         )
 
-        # 2. Controles de Vocabulario
+        # 2. Controles de Vocabulario (Card 2)
+        self.lbl_queue_count = ft.Text("0 Señas registradas", size=11, color=COLOR_TEXT_MUTED)
         self.new_word_input = ft.TextField(
-            label="Nueva Palabra",
-            width=200,
+            hint_text="Nueva palabra/seña...",
             text_size=12,
             bgcolor="#FFFFFF",
             border_color=COLOR_BORDER,
             focused_border_color=COLOR_PRIMARY,
-            label_style=ft.TextStyle(color=COLOR_TEXT_MUTED),
             color=COLOR_TEXT_TITLE,
-            height=40
+            height=38,
+            expand=True,
+            border_radius=8,
+            prefix_icon=ft.Icons.PAN_TOOL_ALT_OUTLINED,
+            content_padding=ft.Padding(10, 8, 10, 8)
         )
-        # Lista de palabras con scroll siempre activo ("tipo slider vertical")
         self.words_listview = ft.ListView(
             expand=True,
             scroll=ft.ScrollMode.ALWAYS,
-            spacing=10
+            spacing=6,
+            padding=2
         )
 
-        # 3. Configuración para el Docente (Deslizadores al Fondo)
+        # 3. Configuración para el Docente (Card 3 - Deslizadores al Fondo)
         self.slider_delay = ft.Slider(
             min=1.0,
             max=5.0,
@@ -190,7 +216,7 @@ class LSPUIController:
             active_color=COLOR_PRIMARY,
             on_change=self.on_teacher_params_changed
         )
-        self.lbl_delay_val = ft.Text("3.0s", size=12, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+        self.lbl_delay_val = ft.Text("3.0s", size=12, weight=ft.FontWeight.BOLD, color=COLOR_PRIMARY)
 
         self.slider_frames = ft.Slider(
             min=20,
@@ -201,34 +227,41 @@ class LSPUIController:
             active_color=COLOR_PRIMARY,
             on_change=self.on_teacher_params_changed
         )
-        self.lbl_frames_val = ft.Text("30 frames", size=12, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+        self.lbl_frames_val = ft.Text("30", size=12, weight=ft.FontWeight.BOLD, color=COLOR_PRIMARY)
 
-        # 4. Visores de Cámara (Monitor centrado 480x360)
+        # 4. Visores de Cámara (Monitores con estilo Stitch 640x360)
         self.camera_view = ft.Image(
             src=EMPTY_PIXEL_DATA,
-            width=480,
+            width=640,
             height=360,
             fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain"
         )
         self.test_camera_view = ft.Image(
             src=EMPTY_PIXEL_DATA,
-            width=480,
-            height=360,
+            width=640,
+            height=310,
             fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain"
         )
 
         self.warning_banner = ft.Container(
             content=ft.Row([
-                ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=ft.Colors.AMBER_900, size=18),
-                ft.Text("⚠️ ADVERTENCIA: Cámara obstruida o baja iluminación.",
-                        color=ft.Colors.AMBER_900, weight=ft.FontWeight.BOLD, size=12)
+                ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=ft.Colors.AMBER_900, size=16),
+                ft.Text("⚠️ ADVERTENCIA: Iluminación deficiente o cámara obstruida.",
+                        color=ft.Colors.AMBER_900, weight=ft.FontWeight.BOLD, size=11)
             ], alignment=ft.MainAxisAlignment.CENTER),
             bgcolor="#FEF3C7",
-            padding=6,
-            border_radius=8,
+            padding=4,
+            border_radius=6,
             border=ft.Border.all(1, "#FCD34D"),
             visible=False
         )
+
+        # Overlays HUD en el Monitor de Cámara (Stitch)
+        self.lbl_hud_fps = ft.Text("FPS: 25.0", size=10, color="#38BDF8", weight=ft.FontWeight.BOLD)
+        self.lbl_hud_conf = ft.Text("Confianza: 98.4%", size=10, color="#38BDF8", weight=ft.FontWeight.BOLD)
+        self.lbl_hud_hand = ft.Text("Mano: Derecha", size=10, color="#38BDF8", weight=ft.FontWeight.BOLD)
+        self.lbl_hud_status = ft.Text("ESTADO: • Listo para operar", size=10, color="#E2E8F0", weight=ft.FontWeight.W_500)
+        self.lbl_hud_target = ft.Text("PATRÓN OBJETIVO: Seleccione seña", size=10, color="#F8FAFC", weight=ft.FontWeight.BOLD)
 
         # 5. Modo Escucha por Voz con comando 'Recopila'
         self.switch_voice = ft.Switch(
@@ -241,7 +274,7 @@ class LSPUIController:
         )
         self.voice_badge = ft.Container(
             content=ft.Row([
-                ft.Icon(ft.Icons.MIC_OFF, size=15, color=COLOR_TEXT_MUTED),
+                ft.Icon(ft.Icons.MIC_OFF, size=14, color=COLOR_TEXT_MUTED),
                 ft.Text("Voz inactiva", size=11, color=COLOR_TEXT_MUTED)
             ], spacing=4),
             padding=ft.Padding(6, 3, 6, 3),
@@ -252,80 +285,104 @@ class LSPUIController:
         # 6. Botones de Acción (Pestaña 1)
         self.btn_camera = ft.Button(
             content="Encender Cámara",
-            icon=ft.Icons.VIDEOCAM,
-            bgcolor=COLOR_PRIMARY,
-            color=ft.Colors.WHITE,
+            icon=ft.Icons.VIDEOCAM_OUTLINED,
+            bgcolor="#F1F5F9",
+            color=COLOR_TEXT_TITLE,
             on_click=self.toggle_camera,
-            width=180,
-            height=40
+            width=200,
+            height=42
         )
         self.btn_generate_cnn = ft.Button(
-            content="Generar Modelo de Categoría",
+            content="Entrenar Categoría",
             icon=ft.Icons.AUTO_AWESOME,
-            bgcolor="#6366F1",
+            bgcolor=COLOR_PRIMARY,
             color=ft.Colors.WHITE,
             on_click=self.run_cnn_training_flow,
             disabled=True,
-            width=240,
-            height=40,
+            width=220,
+            height=42,
             tooltip="Habilitado al tener al menos 30 muestras de cada palabra en la categoría"
         )
 
         # 7. Barra de Estado Escolar (Superior Permanente)
         self.status_text = ft.Text(
-            value="Sistema Escolar Listo. Encienda la cámara para comenzar.",
+            value="Sistema listo. Micrófono activo (Escuchando comando: 'recopila').",
             color=COLOR_TEXT_TITLE,
-            size=13,
+            size=12,
             weight=ft.FontWeight.W_500
         )
-        self.training_progress = ft.ProgressRing(visible=False, width=16, height=16, stroke_width=2, color=COLOR_PRIMARY)
+        self.training_progress = ft.ProgressRing(visible=False, width=14, height=14, stroke_width=2, color=COLOR_PRIMARY)
 
-        # 8. Controles de la Pestaña 2: Inferencia en Tiempo Real con Voz y Letras Gigantes
+        # 8. Sub-banner Dinámico de Modelo Activo en Modo Pruebas (Stitch test.png)
+        self.lbl_active_model_subbanner = ft.Text(
+            value="• Modelo Activo: Ninguno seleccionado. Elija una categoría para iniciar inferencia a 25.0 FPS.",
+            size=12,
+            color=COLOR_TEXT_TITLE,
+            weight=ft.FontWeight.W_500
+        )
+
+        # 9. Controles de la Pestaña 2: Inferencia en Tiempo Real
         self.test_category_dropdown = ft.Dropdown(
-            label="Modelo por Categoría",
-            hint_text="Seleccione modelo binario",
-            width=260,
+            hint_text="Seleccione modelo de prueba...",
+            text_size=12,
             bgcolor="#FFFFFF",
             border_color=COLOR_BORDER,
             focused_border_color=COLOR_PRIMARY,
             color=COLOR_TEXT_TITLE,
-            height=40,
+            height=38,
+            expand=True,
+            border_radius=8,
+            content_padding=ft.Padding(10, 0, 10, 0),
             on_select=self.on_test_category_selected
         )
         self.btn_toggle_test = ft.Button(
             content="Iniciar Prueba",
-            icon=ft.Icons.PLAY_ARROW,
-            bgcolor=COLOR_SUCCESS,
+            icon=ft.Icons.PLAY_ARROW_ROUNDED,
+            bgcolor=COLOR_PRIMARY,
             color=ft.Colors.WHITE,
             on_click=self.toggle_live_test,
-            width=180,
-            height=40
+            height=38,
+            expand=True
         )
-        # Tipografía gigante (size=36, color=#1A365D) para traducción clara
+        self.test_classes_listview = ft.ListView(
+            expand=True,
+            scroll=ft.ScrollMode.ALWAYS,
+            spacing=6,
+            padding=2
+        )
+        self.lbl_test_classes_count = ft.Text("0 Clases", size=11, color=COLOR_TEXT_MUTED)
+
+        # Componentes de la Tarjeta Gigante de Traducción (Tipografía 45px - Stitch)
         self.lbl_prediction = ft.Text(
-            value="Esperando seña...",
-            size=36,
+            value="ESPERANDO SEÑA...",
+            size=45,
             weight=ft.FontWeight.BOLD,
             color=COLOR_TEXT_TITLE,
-            text_align=ft.TextAlign.CENTER
+            text_align=ft.TextAlign.LEFT
+        )
+        self.lbl_prediction_badge = ft.Container(
+            content=ft.Text("Detección Activa", size=11, color=COLOR_PRIMARY, weight=ft.FontWeight.BOLD),
+            bgcolor=COLOR_PRIMARY_LIGHT,
+            border_radius=6,
+            padding=ft.Padding(8, 3, 8, 3)
         )
         self.lbl_confidence = ft.Text(
-            value="Confianza: 0%",
-            size=12,
-            weight=ft.FontWeight.W_600,
-            color=COLOR_PRIMARY
+            value="0.0%",
+            size=26,
+            weight=ft.FontWeight.BOLD,
+            color=COLOR_TEXT_TITLE
         )
         self.progress_bar_prediction = ft.ProgressBar(
             value=0.0,
             color=COLOR_PRIMARY,
-            bgcolor=COLOR_STATUS_BG,
+            bgcolor="#E2E8F0",
             height=8,
-            border_radius=4,
-            width=360
+            border_radius=4
         )
+        self.lbl_detection_state = ft.Text("✓ Estado: Esperando inicio de prueba en vivo", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.W_500)
         self.test_status_text = ft.Text(
-            value="Seleccione un modelo (.keras) y pulse 'Iniciar Prueba' para validar señas en vivo.",
-            size=12,
+            value="Margen de Error: ± 0.04",
+            size=11,
             color=COLOR_TEXT_MUTED
         )
 
@@ -337,6 +394,46 @@ class LSPUIController:
         # Cargar categorías y modelos iniciales
         self.load_categories_to_dropdown()
         self.load_trained_models_to_test_dropdown()
+
+    # --- CONTROL DE PESTAÑAS Y MODOS SUPERIORES ---
+
+    def switch_tab(self, index: int):
+        """Conmuta limpiamente de pestaña actualizando los botones pill superiores y evitando colisiones de cámara."""
+        if hasattr(self, "tabs") and self.tabs:
+            self.tabs.selected_index = index
+            update_ui_safely(self.tabs)
+
+        # Actualizar estilo de píldoras superiores
+        pills = [self.btn_mode_train, self.btn_mode_test, self.btn_mode_cloud]
+        for i, p in enumerate(pills):
+            if p:
+                if i == index:
+                    p.bgcolor = COLOR_PRIMARY
+                    p.content.color = ft.Colors.WHITE
+                    p.content.weight = ft.FontWeight.BOLD
+                else:
+                    p.bgcolor = ft.Colors.TRANSPARENT
+                    p.content.color = COLOR_TEXT_MUTED
+                    p.content.weight = ft.FontWeight.W_500
+                update_ui_safely(p)
+
+        if index == 0:
+            if self.test_model_banner:
+                self.test_model_banner.visible = False
+                update_ui_safely(self.test_model_banner)
+            self.voice_service.allow_voice_trigger = True
+        elif index == 1:
+            if self.test_model_banner:
+                self.test_model_banner.visible = True
+                update_ui_safely(self.test_model_banner)
+            self.voice_service.allow_voice_trigger = False
+            self.load_trained_models_to_test_dropdown()
+        elif index == 2:
+            if self.test_model_banner:
+                self.test_model_banner.visible = False
+                update_ui_safely(self.test_model_banner)
+            self.voice_service.allow_voice_trigger = False
+            self.refresh_cloud_table()
 
     # --- REFRESCO DE CÁMARA CON PROTECCIÓN CONTRA DESTROYED SESSION ---
 
@@ -361,7 +458,7 @@ class LSPUIController:
         frames = int(self.slider_frames.value)
 
         self.lbl_delay_val.value = f"{delay:.1f}s"
-        self.lbl_frames_val.value = f"{frames} frames"
+        self.lbl_frames_val.value = f"{frames}"
         
         self.vision_service.update_params(delay=delay, frames=frames)
 
@@ -373,27 +470,32 @@ class LSPUIController:
     def on_state_changed(self, state: str, message: str = ""):
         if state == "Preparacion":
             self.status_text.value = f"⏱️ {message}"
-            self.status_text.color = "#D97706"
+            self.status_text.color = COLOR_AMBER
+            self.lbl_hud_status.value = f"ESTADO: • {message}"
             self.enable_ui_controls(False)
         elif state == "Grabacion":
             self.status_text.value = f"🔴 {message}"
             self.status_text.color = COLOR_REC_BTN
+            self.lbl_hud_status.value = f"ESTADO: • {message}"
         elif state == "Inactivo":
             self.status_text.value = f"✅ {message}"
             self.status_text.color = COLOR_SUCCESS
+            self.lbl_hud_status.value = "ESTADO: • Sistema en reposo listo para operar"
             self.enable_ui_controls(True)
         elif state == "Fin":
             self.status_text.value = f"💾 {message}"
             self.status_text.color = COLOR_PRIMARY
+            self.lbl_hud_status.value = f"ESTADO: • {message}"
 
         update_ui_safely(self.status_text)
+        update_ui_safely(self.lbl_hud_status)
 
     def on_recording_complete(self, category: str, word: str, sequence: list):
         try:
             file_path = self.data_manager.save_sequence(category, word, sequence)
             word_dir = self.data_manager._get_word_dir(category, word)
             num_muestras = len([f for f in os.listdir(word_dir) if f.endswith('.csv')])
-            self.status_text.value = f"¡Muestra guardada! '{word.upper()}': {num_muestras} muestras."
+            self.status_text.value = f"¡Muestra guardada! '{word.upper()}': {num_muestras} muestras registradas."
             self.status_text.color = COLOR_SUCCESS
             show_snack_bar(self.page, f"Muestra #{num_muestras} registrada para '{word.upper()}'")
         except Exception as ex:
@@ -414,7 +516,7 @@ class LSPUIController:
                 self.toggle_camera(None)
 
             self.voice_badge.content = ft.Row([
-                ft.Icon(ft.Icons.MIC, size=15, color=COLOR_SUCCESS),
+                ft.Icon(ft.Icons.MIC, size=14, color=COLOR_SUCCESS),
                 ft.Text("Escuchando...", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.W_600)
             ], spacing=4)
             self.voice_badge.bgcolor = "#DCFCE7"
@@ -423,7 +525,7 @@ class LSPUIController:
         else:
             self.voice_service.stop()
             self.voice_badge.content = ft.Row([
-                ft.Icon(ft.Icons.MIC_OFF, size=15, color=COLOR_TEXT_MUTED),
+                ft.Icon(ft.Icons.MIC_OFF, size=14, color=COLOR_TEXT_MUTED),
                 ft.Text("Voz inactiva", size=11, color=COLOR_TEXT_MUTED)
             ], spacing=4)
             self.voice_badge.bgcolor = "#F1F5F9"
@@ -438,19 +540,15 @@ class LSPUIController:
 
     def on_voice_trigger_detected(self):
         if not getattr(self.voice_service, "allow_voice_trigger", True):
-            print("[Voz] Comando 'recopila' ignorado: allow_voice_trigger está desactivado.")
             return
 
         if hasattr(self, "tabs") and self.tabs and getattr(self.tabs, "selected_index", 0) != 0:
-            print("[Voz] Comando 'recopila' ignorado: fuera de la pestaña de Captura.")
             return
 
         if not self.is_camera_active:
-            print("[Voz] Comando 'recopila' ignorado: la cámara web está apagada.")
             return
 
         if self.vision_service.current_state != "Inactivo":
-            print(f"[Voz] Comando 'recopila' ignorado: visión en estado activo '{self.vision_service.current_state}'.")
             return
 
         target_word = None
@@ -474,7 +572,7 @@ class LSPUIController:
             return
 
         self.selected_word = target_word
-        show_snack_bar(self.page, f"🎤 ¡Comando 'Recopila' confirmado! Preparando captura para '{target_word.upper()}'")
+        show_snack_bar(self.page, f"🎤 ¡Comando 'Recopila' detectado! Preparando '{target_word.upper()}'")
         self.start_preparation_flow(target_word)
 
     # --- FLUJO DE PREPARACIÓN Y CAPTURA ---
@@ -488,6 +586,9 @@ class LSPUIController:
             return
 
         self.selected_word = word
+        self.lbl_hud_target.value = f"PATRÓN OBJETIVO: {word.upper()}"
+        update_ui_safely(self.lbl_hud_target)
+
         self.enable_ui_controls(False)
         self.vision_service.start_preparation(self.selected_category, word)
 
@@ -499,6 +600,9 @@ class LSPUIController:
         if self.selected_category and self.selected_category in categories:
             self.category_dropdown.value = self.selected_category
         elif categories:
+            self.category_dropdown.value = categories[0]
+            self.on_category_changed(categories[0])
+        else:
             self.category_dropdown.value = None
         update_ui_safely(self.category_dropdown)
 
@@ -541,13 +645,7 @@ class LSPUIController:
             self.btn_generate_cnn.disabled = False
             self.btn_generate_cnn.tooltip = "¡Listo! Todas las palabras tienen 30+ muestras."
 
-        try:
-            if self.page and hasattr(self.page, "is_active") and self.page.is_active:
-                update_ui_safely(self.btn_generate_cnn)
-        except RuntimeError as e:
-            if "destroyed session" in str(e).lower():
-                print("[CONCURRENCIA] Sesión cerrada. Abortando actualización de control.")
-                return
+        update_ui_safely(self.btn_generate_cnn)
 
     def add_new_category(self, e):
         cat_name = self.new_category_input.value.strip()
@@ -653,10 +751,15 @@ class LSPUIController:
     def refresh_words_list(self):
         self.words_listview.controls.clear()
         if not self.selected_category:
+            self.lbl_queue_count.value = "0 Señas registradas"
+            update_ui_safely(self.lbl_queue_count)
             update_ui_safely(self.words_listview)
             return
 
         words = self.data_manager.get_words_in_category(self.selected_category)
+        self.lbl_queue_count.value = f"{len(words)} Señas en cola"
+        update_ui_safely(self.lbl_queue_count)
+
         for word in words:
             word_dir = self.data_manager._get_word_dir(self.selected_category, word)
             samples_count = 0
@@ -664,40 +767,84 @@ class LSPUIController:
                 samples_count = len([f for f in os.listdir(word_dir) if f.endswith('.csv')])
 
             is_complete = samples_count >= 30
-            badge_color = COLOR_SUCCESS if is_complete else "#D97706"
+            is_active_word = (self.selected_word == word)
+
+            # Estilo píxel a píxel según Stitch principal.png
+            if is_complete:
+                # 30/30 Completado: fondo blanco, check verde, texto verde
+                item_bg = "#FFFFFF"
+                item_border = COLOR_BORDER
+                icon_indicator = ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color=COLOR_SUCCESS, size=18)
+                word_text_color = COLOR_SUCCESS
+                label_str = f"{word.upper()} ({samples_count}/30)"
+                rec_btn = ft.IconButton(
+                    icon=ft.Icons.VIDEOCAM_OUTLINED,
+                    icon_color=COLOR_TEXT_MUTED,
+                    icon_size=18,
+                    tooltip="Grabar muestra adicional",
+                    on_click=lambda ev, w=word: self.start_preparation_flow(w)
+                )
+            elif samples_count > 0 or is_active_word:
+                # En progreso / Seleccionado: fondo amarillo claro, punto ámbar, botón REC rojo
+                item_bg = "#FEF9C3"
+                item_border = "#FDE047"
+                icon_indicator = ft.Container(width=10, height=10, bgcolor=COLOR_AMBER, border_radius=5)
+                word_text_color = "#B45309"
+                label_str = f"{word.upper()} ({samples_count}/30 muestras)"
+                rec_btn = ft.Container(
+                    content=ft.Row([
+                        ft.Container(width=7, height=7, bgcolor=ft.Colors.WHITE, border_radius=4),
+                        ft.Text("REC", size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE)
+                    ], spacing=4, alignment=ft.MainAxisAlignment.CENTER),
+                    bgcolor=COLOR_REC_BTN,
+                    border_radius=12,
+                    padding=ft.Padding(8, 3, 8, 3),
+                    on_click=lambda ev, w=word: self.start_preparation_flow(w),
+                    tooltip="Iniciar grabación con cuenta regresiva"
+                )
+            else:
+                # 0/30 Sin iniciar: círculo gris
+                item_bg = "#FFFFFF"
+                item_border = "#E2E8F0"
+                icon_indicator = ft.Icon(ft.Icons.RADIO_BUTTON_UNCHECKED, color="#94A3B8", size=18)
+                word_text_color = COLOR_TEXT_MUTED
+                label_str = f"{word.upper()} (0/30)"
+                rec_btn = ft.IconButton(
+                    icon=ft.Icons.VIDEOCAM_OUTLINED,
+                    icon_color=COLOR_TEXT_MUTED,
+                    icon_size=18,
+                    tooltip="Grabar muestra inicial",
+                    on_click=lambda ev, w=word: self.start_preparation_flow(w)
+                )
 
             word_row = ft.Container(
                 content=ft.Row([
-                    ft.Text(f"{word.upper()} ({samples_count}/30)", expand=True, size=12, weight=ft.FontWeight.BOLD, color=badge_color),
-                    # Botón Modificar Muestras
-                    ft.IconButton(
-                        icon=ft.Icons.LIST_ALT,
-                        icon_color=COLOR_PRIMARY,
-                        icon_size=18,
-                        tooltip="Modificar Muestras (.csv individuales)",
-                        on_click=lambda ev, w=word: self.open_samples_modal(w)
-                    ),
-                    # Botón Grabar
-                    ft.IconButton(
-                        icon=ft.Icons.RADIO_BUTTON_CHECKED,
-                        icon_color=COLOR_REC_BTN,
-                        icon_size=18,
-                        tooltip="Grabar seña con preparación previa",
-                        on_click=lambda ev, w=word: self.start_preparation_flow(w)
-                    ),
-                    # Botón Eliminar
-                    ft.IconButton(
-                        icon=ft.Icons.DELETE_OUTLINE,
-                        icon_color=COLOR_REC_BTN,
-                        icon_size=18,
-                        tooltip="Eliminar palabra y todas sus muestras",
-                        on_click=lambda ev, w=word: self.delete_word(w)
-                    )
+                    ft.Row([
+                        icon_indicator,
+                        ft.Text(label_str, size=12, weight=ft.FontWeight.BOLD, color=word_text_color)
+                    ], spacing=8, expand=True),
+                    ft.Row([
+                        ft.IconButton(
+                            icon=ft.Icons.DESCRIPTION_OUTLINED,
+                            icon_color=COLOR_PRIMARY,
+                            icon_size=17,
+                            tooltip="Modificar Muestras (.csv individuales)",
+                            on_click=lambda ev, w=word: self.open_samples_modal(w)
+                        ),
+                        rec_btn,
+                        ft.IconButton(
+                            icon=ft.Icons.DELETE_OUTLINE,
+                            icon_color=COLOR_REC_BTN,
+                            icon_size=17,
+                            tooltip="Eliminar palabra y sus muestras",
+                            on_click=lambda ev, w=word: self.delete_word(w)
+                        )
+                    ], spacing=2)
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                padding=ft.Padding(8, 4, 8, 4),
-                border=ft.Border.all(1, COLOR_BORDER),
+                padding=ft.Padding(8, 5, 8, 5),
+                border=ft.Border.all(1, item_border),
                 border_radius=8,
-                bgcolor="#F8FAFC"
+                bgcolor=item_bg
             )
             self.words_listview.controls.append(word_row)
 
@@ -724,10 +871,12 @@ class LSPUIController:
 
     def delete_word(self, word: str):
         if self.data_manager.delete_word(self.selected_category, word):
-            self.status_text.value = f"Palabra '{word.upper()}' eliminada del disco."
+            self.status_text.value = f"Palabra '{word.upper()}' eliminada del disco y modelo desactualizado retirado."
             self.status_text.color = COLOR_REC_BTN
             self.refresh_words_list()
             self.update_cnn_button_state()
+            self.load_trained_models_to_test_dropdown()
+            show_snack_bar(self.page, f"Palabra '{word.upper()}' eliminada. Modelos actualizados.")
 
     # --- MODAL DE GESTIÓN DE MUESTRAS (CRUD GRANULAR) ---
 
@@ -810,7 +959,7 @@ class LSPUIController:
         else:
             for idx, sample in enumerate(samples):
                 badge_bg = "#DCFCE7" if sample["is_valid"] else "#FEF3C7"
-                badge_fg = COLOR_SUCCESS if sample["is_valid"] else "#D97706"
+                badge_fg = COLOR_SUCCESS if sample["is_valid"] else COLOR_AMBER
                 
                 row_item = ft.Container(
                     content=ft.Row([
@@ -875,16 +1024,18 @@ class LSPUIController:
             self.vision_service.start()
             self.is_camera_active = True
             self.btn_camera.content = "Apagar Cámara"
-            self.btn_camera.icon = ft.Icons.VIDEOCAM_OFF
+            self.btn_camera.icon = ft.Icons.VIDEOCAM_OFF_OUTLINED
             self.btn_camera.bgcolor = COLOR_REC_BTN
+            self.btn_camera.color = ft.Colors.WHITE
             self.status_text.value = "Cámara activa (25 FPS). Listo para operar."
             self.status_text.color = COLOR_SUCCESS
         else:
             self.vision_service.stop()
             self.is_camera_active = False
             self.btn_camera.content = "Encender Cámara"
-            self.btn_camera.icon = ft.Icons.VIDEOCAM
-            self.btn_camera.bgcolor = COLOR_PRIMARY
+            self.btn_camera.icon = ft.Icons.VIDEOCAM_OUTLINED
+            self.btn_camera.bgcolor = "#F1F5F9"
+            self.btn_camera.color = COLOR_TEXT_TITLE
             self.camera_view.src = EMPTY_PIXEL_DATA
             self.test_camera_view.src = EMPTY_PIXEL_DATA
             self.warning_banner.visible = False
@@ -948,6 +1099,7 @@ class LSPUIController:
                         self.status_text.value = f"Error en entrenamiento CNN: {str(err)}"
                         self.status_text.color = COLOR_REC_BTN
                         show_snack_bar(self.page, f"Error: {str(err)}", is_error=True)
+                        show_error_popup(self.page, "Error en Entrenamiento de Red CNN", f"Ocurrió un fallo durante el entrenamiento de '{self.selected_category}':\n\n{str(err)}")
                     except RuntimeError as re:
                         if "destroyed session" in str(re).lower(): return
 
@@ -971,12 +1123,12 @@ class LSPUIController:
 
     def load_trained_models_to_test_dropdown(self):
         """
-        Escanea 'data/modelos/' buscando categorías entrenadas válidas.
+        Escanea la ruta absoluta 'data/modelos/' buscando categorías entrenadas válidas.
         Valida que existan tanto el modelo binario (.keras) como las etiquetas (labels.json),
         verificando únicamente tamaño físico > 0 y NUNCA abriendo el binario como texto.
         """
         categories = set()
-        model_base_dir = "data/modelos"
+        model_base_dir = MODELOS_DIR
         os.makedirs(model_base_dir, exist_ok=True)
         
         if os.path.exists(model_base_dir):
@@ -996,6 +1148,7 @@ class LSPUIController:
         
         if cat_list and (not self.test_category_dropdown.value or self.test_category_dropdown.value not in cat_list):
             self.test_category_dropdown.value = cat_list[0]
+            self.on_test_category_selected(None)
         elif not cat_list:
             self.test_category_dropdown.value = None
 
@@ -1003,21 +1156,68 @@ class LSPUIController:
 
     def on_test_category_selected(self, e):
         cat = self.test_category_dropdown.value
-        if cat:
-            candidate_paths = [
-                os.path.join("data/modelos", cat, "model.keras"),
-                os.path.join("data/modelos", cat, "model.h5"),
-            ]
-            valid_model = any(os.path.exists(cp) and os.path.getsize(cp) > 0 for cp in candidate_paths)
+        if not cat:
+            return
 
-            if valid_model:
-                self.test_status_text.value = f"Modelo verificado para categoría '{cat.upper()}'. Listo para iniciar prueba."
-                self.test_status_text.color = COLOR_SUCCESS
-            else:
-                self.test_status_text.value = f"Atención: No se encontró el binario del modelo para '{cat.upper()}'."
-                self.test_status_text.color = COLOR_REC_BTN
+        category_dir = os.path.join(MODELOS_DIR, cat)
+        candidate_paths = [
+            os.path.join(category_dir, "model.keras"),
+            os.path.join(category_dir, "model.h5"),
+        ]
+        valid_model = any(os.path.exists(cp) and os.path.getsize(cp) > 0 for cp in candidate_paths)
 
-            update_ui_safely(self.test_status_text)
+        # Cargar etiquetas en la lista lateral de señas de la Pestaña 2 (Stitch test.png)
+        labels_path = os.path.join(category_dir, "labels.json")
+        self.test_classes_listview.controls.clear()
+
+        if valid_model and os.path.exists(labels_path):
+            try:
+                with open(labels_path, 'r', encoding='utf-8') as f:
+                    label_map = json.load(f)
+                
+                classes = list(label_map.values()) if isinstance(label_map, dict) else list(label_map)
+                self.lbl_test_classes_count.value = f"{len(classes)} Clases"
+
+                for idx, cname in enumerate(classes):
+                    num_badge = f"{idx + 1:02d}"
+                    row_item = ft.Container(
+                        content=ft.Row([
+                            ft.Row([
+                                ft.Container(
+                                    content=ft.Text(num_badge, size=11, weight=ft.FontWeight.BOLD, color=COLOR_PRIMARY),
+                                    bgcolor=COLOR_PRIMARY_LIGHT,
+                                    border_radius=4,
+                                    padding=ft.Padding(6, 3, 6, 3)
+                                ),
+                                ft.Column([
+                                    ft.Text(cname.upper(), size=12, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
+                                    ft.Text("Gesto postulado", size=10, color=COLOR_TEXT_MUTED)
+                                ], spacing=1)
+                            ], spacing=8),
+                            ft.Container(
+                                content=ft.Text("✓ Listo", size=10, color=COLOR_TEXT_MUTED, weight=ft.FontWeight.W_500),
+                                bgcolor="#F1F5F9",
+                                border_radius=10,
+                                padding=ft.Padding(6, 2, 6, 2)
+                            )
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                        bgcolor="#FFFFFF",
+                        border=ft.Border.all(1, "#E2E8F0"),
+                        border_radius=8,
+                        padding=ft.Padding(8, 5, 8, 5)
+                    )
+                    self.test_classes_listview.controls.append(row_item)
+
+                self.lbl_active_model_subbanner.value = f"• Modelo Activo: Categoría '{cat.upper()}' cargado con éxito. Procesando a 25.0 FPS local."
+                self.lbl_prediction_badge.content = ft.Text(cat.upper(), size=11, color=COLOR_PRIMARY, weight=ft.FontWeight.BOLD)
+
+            except Exception as ex:
+                print(f"[TEST UI] Error leyendo clases: {ex}")
+
+        update_ui_safely(self.lbl_test_classes_count)
+        update_ui_safely(self.test_classes_listview)
+        update_ui_safely(self.lbl_active_model_subbanner)
+        update_ui_safely(self.lbl_prediction_badge)
 
     def toggle_live_test(self, e):
         if not self.is_testing:
@@ -1027,9 +1227,9 @@ class LSPUIController:
                 return
 
             try:
-                # Carga desacoplada desde data/modelos/{cat}/
+                # Carga desacoplada desde ruta absoluta MODELOS_DIR
                 if not hasattr(self, "live_tester") or self.live_tester is None:
-                    self.live_tester = LSPTesterService(model_base_dir="data/modelos", page_ref=self.page)
+                    self.live_tester = LSPTesterService(model_base_dir=MODELOS_DIR, page_ref=self.page)
 
                 self.live_tester.load_trained_model(cat)
                 self.live_tester.start()
@@ -1048,21 +1248,17 @@ class LSPUIController:
 
                 self.is_testing = True
                 self.btn_toggle_test.content = "Detener Prueba"
-                self.btn_toggle_test.icon = ft.Icons.STOP
+                self.btn_toggle_test.icon = ft.Icons.STOP_ROUNDED
                 self.btn_toggle_test.bgcolor = COLOR_REC_BTN
-                self.lbl_prediction.value = "Esperando seña..."
-                self.lbl_prediction.color = COLOR_TEXT_TITLE
-                self.lbl_confidence.value = "Confianza: 0%"
+                self.lbl_prediction.value = "ESPERANDO SEÑA..."
+                self.lbl_confidence.value = "0.0%"
                 self.progress_bar_prediction.value = 0.0
-                num_classes = len(getattr(self.live_tester, "labels_list", self.live_tester.labels))
-                self.test_status_text.value = f"🔴 Prueba activa: {cat.upper()} ({num_classes} clases). Modelo nativo .keras cargado."
-                self.test_status_text.color = COLOR_SUCCESS
-                show_snack_bar(self.page, f"Prueba iniciada para '{cat.upper()}'. Realice señas frente a la cámara.")
+                self.lbl_detection_state.value = f"✓ Estado: Inferencia activa ({cat.upper()})"
+                show_snack_bar(self.page, f"Prueba en vivo iniciada para '{cat.upper()}'. Realice señas frente a la cámara.")
 
             except Exception as ex:
                 show_snack_bar(self.page, f"Error cargando modelo: {str(ex)}", is_error=True)
-                self.test_status_text.value = f"Error cargando modelo: {str(ex)}"
-                self.test_status_text.color = COLOR_REC_BTN
+                show_error_popup(self.page, "Error al Cargar Modelo de Pruebas", f"No se pudo cargar el modelo para la categoría '{cat}':\n\n{str(ex)}")
                 print(f"[ERROR CARGA MODELO] {str(ex)}")
 
         else:
@@ -1071,27 +1267,339 @@ class LSPUIController:
             self.vision_service.live_tester = None
             self.vision_service.prediction_label_control = None
 
-            # Restaurar trigger de voz si estamos en pestaña 0
             if hasattr(self, "tabs") and self.tabs and getattr(self.tabs, "selected_index", 0) == 0:
                 self.voice_service.allow_voice_trigger = True
 
             self.is_testing = False
             self.btn_toggle_test.content = "Iniciar Prueba"
-            self.btn_toggle_test.icon = ft.Icons.PLAY_ARROW
-            self.btn_toggle_test.bgcolor = COLOR_SUCCESS
-            self.lbl_prediction.value = "Prueba detenida."
-            self.lbl_prediction.color = COLOR_TEXT_MUTED
-            self.lbl_confidence.value = "Confianza: 0%"
+            self.btn_toggle_test.icon = ft.Icons.PLAY_ARROW_ROUNDED
+            self.btn_toggle_test.bgcolor = COLOR_PRIMARY
+            self.lbl_prediction.value = "PRUEBA DETENIDA"
+            self.lbl_confidence.value = "0.0%"
             self.progress_bar_prediction.value = 0.0
-            self.test_status_text.value = "Prueba detenida. Puede cambiar de modelo o reiniciar."
-            self.test_status_text.color = COLOR_TEXT_MUTED
+            self.lbl_detection_state.value = "✓ Estado: Prueba detenida"
             show_snack_bar(self.page, "Prueba en vivo detenida.")
 
         update_ui_safely(self.btn_toggle_test)
         update_ui_safely(self.lbl_prediction)
         update_ui_safely(self.lbl_confidence)
         update_ui_safely(self.progress_bar_prediction)
-        update_ui_safely(self.test_status_text)
+        update_ui_safely(self.lbl_detection_state)
+
+    def trigger_tts_pronounce(self, e):
+        """Pronuncia la palabra actual en voz alta con pyttsx3."""
+        word = self.lbl_prediction.value
+        if word and word not in ["ESPERANDO SEÑA...", "PRUEBA DETENIDA", ""]:
+            from src.tester_service import speak_word_offline
+            speak_word_offline(word)
+            show_snack_bar(self.page, f"Pronunciando: {word}")
+
+    # --- MÓDULO DE SINCRONIZACIÓN CLOUD (AWS S3 & TENSORFLOW.JS) ---
+
+    def refresh_cloud_table(self, e=None):
+        """Escanea las categorías locales y de AWS S3 y actualiza los badges de sincronización."""
+        def _async_refresh():
+            try:
+                def _ui_start():
+                    self.cloud_progress_ring.visible = True
+                    self.lbl_cloud_status.value = "Consultando estados de sincronización en AWS S3..."
+                    update_ui_safely(self.cloud_progress_ring)
+                    update_ui_safely(self.lbl_cloud_status)
+
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_start)
+
+                local_cats = set(self.data_manager.get_categories())
+                if os.path.exists(MODELOS_DIR):
+                    for item in os.listdir(MODELOS_DIR):
+                        if os.path.isdir(os.path.join(MODELOS_DIR, item)):
+                            local_cats.add(item.lower().strip())
+
+                cloud_cats = set(self.cloud_service.list_all_cloud_categories())
+                all_cats = sorted(list(local_cats.union(cloud_cats)))
+
+                statuses = {}
+                for cat in all_cats:
+                    statuses[cat] = self.cloud_service.check_cloud_status(cat)
+
+                self.cloud_statuses = statuses
+
+                def _ui_populate():
+                    self.cloud_categories_listview.controls.clear()
+                    if not all_cats:
+                        self.cloud_categories_listview.controls.append(
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Icon(ft.Icons.CLOUD_OFF, size=36, color=COLOR_TEXT_MUTED),
+                                    ft.Text("No hay categorías creadas ni en local ni en la nube.", color=COLOR_TEXT_MUTED, size=12)
+                                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                                height=180,
+                                alignment=ft.Alignment.CENTER
+                            )
+                        )
+                    else:
+                        for cat in all_cats:
+                            st = statuses.get(cat, "NO_SUBIDO")
+                            has_local = self.cloud_service.verify_local_model(cat)
+
+                            # 1. Badge de Estado Local
+                            if has_local:
+                                local_badge = ft.Container(
+                                    content=ft.Row([
+                                        ft.Icon(ft.Icons.CHECK_CIRCLE, size=14, color=COLOR_SUCCESS),
+                                        ft.Text("Entrenado (.keras)", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.W_600)
+                                    ], spacing=4),
+                                    bgcolor="#DCFCE7",
+                                    border_radius=6,
+                                    padding=ft.Padding(8, 4, 8, 4)
+                                )
+                            else:
+                                local_badge = ft.Container(
+                                    content=ft.Row([
+                                        ft.Icon(ft.Icons.CANCEL_OUTLINED, size=14, color=COLOR_REC_BTN),
+                                        ft.Text("Sin Modelo Local", size=11, color=COLOR_REC_BTN, weight=ft.FontWeight.W_600)
+                                    ], spacing=4),
+                                    bgcolor="#FEE2E2",
+                                    border_radius=6,
+                                    padding=ft.Padding(8, 4, 8, 4)
+                                )
+
+                            # 2. Badge de Estado en AWS S3
+                            if st == "PUBLICADO":
+                                cloud_badge = ft.Container(
+                                    content=ft.Row([
+                                        ft.Text("🚀", size=12),
+                                        ft.Text("Sincronizado", size=11, color=COLOR_SUCCESS, weight=ft.FontWeight.BOLD)
+                                    ], spacing=4),
+                                    bgcolor="#E8F5E9",
+                                    border_radius=6,
+                                    padding=ft.Padding(8, 4, 8, 4)
+                                )
+                                sync_btn_text = "Actualizar en S3"
+                                sync_btn_bg = "#F1F5F9"
+                                sync_btn_fg = COLOR_PRIMARY
+                                delete_disabled = False
+                            elif st == "DESACTUALIZADO":
+                                cloud_badge = ft.Container(
+                                    content=ft.Row([
+                                        ft.Text("⚠️", size=12),
+                                        ft.Text("Desactualizado", size=11, color="#E65100", weight=ft.FontWeight.BOLD)
+                                    ], spacing=4),
+                                    bgcolor="#FFF3E0",
+                                    border_radius=6,
+                                    padding=ft.Padding(8, 4, 8, 4)
+                                )
+                                sync_btn_text = "Re-sincronizar"
+                                sync_btn_bg = COLOR_PRIMARY
+                                sync_btn_fg = ft.Colors.WHITE
+                                delete_disabled = False
+                            elif st == "SIN_MODELO_LOCAL":
+                                cloud_badge = ft.Container(
+                                    content=ft.Row([
+                                        ft.Text("☁️", size=12),
+                                        ft.Text("Solo en la Nube" if cat in cloud_cats else "Sin Modelo", size=11, color=COLOR_TEXT_MUTED, weight=ft.FontWeight.W_600)
+                                    ], spacing=4),
+                                    bgcolor="#ECEFF1",
+                                    border_radius=6,
+                                    padding=ft.Padding(8, 4, 8, 4)
+                                )
+                                sync_btn_text = "Subir a S3"
+                                sync_btn_bg = "#E2E8F0"
+                                sync_btn_fg = COLOR_TEXT_MUTED
+                                delete_disabled = (cat not in cloud_cats)
+                            elif st == "ERROR_CONEXION":
+                                cloud_badge = ft.Container(
+                                    content=ft.Row([
+                                        ft.Icon(ft.Icons.WIFI_OFF, size=14, color=COLOR_REC_BTN),
+                                        ft.Text("Error Conexión", size=11, color=COLOR_REC_BTN, weight=ft.FontWeight.BOLD)
+                                    ], spacing=4),
+                                    bgcolor="#FEE2E2",
+                                    border_radius=6,
+                                    padding=ft.Padding(8, 4, 8, 4)
+                                )
+                                sync_btn_text = "Reintentar"
+                                sync_btn_bg = COLOR_PRIMARY
+                                sync_btn_fg = ft.Colors.WHITE
+                                delete_disabled = True
+                            else:  # NO_SUBIDO
+                                cloud_badge = ft.Container(
+                                    content=ft.Row([
+                                        ft.Text("☁️", size=12),
+                                        ft.Text("No Publicado", size=11, color="#455A64", weight=ft.FontWeight.BOLD)
+                                    ], spacing=4),
+                                    bgcolor="#ECEFF1",
+                                    border_radius=6,
+                                    padding=ft.Padding(8, 4, 8, 4)
+                                )
+                                sync_btn_text = "Subir a S3"
+                                sync_btn_bg = COLOR_PRIMARY
+                                sync_btn_fg = ft.Colors.WHITE
+                                delete_disabled = True
+
+                            btn_upload = ft.Button(
+                                content=sync_btn_text,
+                                icon=ft.Icons.CLOUD_UPLOAD_OUTLINED,
+                                bgcolor=sync_btn_bg,
+                                color=sync_btn_fg,
+                                disabled=not has_local,
+                                on_click=lambda ev, c=cat: self.sync_category_to_cloud(c),
+                                height=36
+                            )
+
+                            btn_del_cloud = ft.IconButton(
+                                icon=ft.Icons.DELETE_OUTLINE,
+                                icon_color=COLOR_REC_BTN,
+                                icon_size=18,
+                                disabled=delete_disabled,
+                                tooltip="Eliminar modelo y archivos de AWS S3",
+                                on_click=lambda ev, c=cat: self.delete_category_from_cloud(c)
+                            )
+
+                            cat_row = ft.Container(
+                                content=ft.Row([
+                                    ft.Container(
+                                        content=ft.Row([
+                                            ft.Icon(ft.Icons.FOLDER_SPECIAL_OUTLINED, color=COLOR_PRIMARY, size=18),
+                                            ft.Text(cat.upper(), size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+                                        ], spacing=8),
+                                        width=220
+                                    ),
+                                    ft.Container(content=local_badge, width=190),
+                                    ft.Container(content=cloud_badge, width=220),
+                                    ft.Row([btn_upload, btn_del_cloud], spacing=6, expand=True)
+                                ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                bgcolor="#FFFFFF",
+                                border=ft.Border.all(1, COLOR_BORDER),
+                                border_radius=8,
+                                padding=ft.Padding(12, 6, 12, 6)
+                            )
+                            self.cloud_categories_listview.controls.append(cat_row)
+
+                    self.cloud_progress_ring.visible = False
+                    self.lbl_cloud_status.value = f"Estados actualizados ({len(all_cats)} categorías inspeccionadas en AWS S3)."
+                    update_ui_safely(self.cloud_progress_ring)
+                    update_ui_safely(self.lbl_cloud_status)
+                    update_ui_safely(self.cloud_categories_listview)
+
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_populate)
+
+            except Exception as e:
+                def _ui_fail():
+                    self.cloud_progress_ring.visible = False
+                    self.lbl_cloud_status.value = f"Fallo al consultar AWS S3: {str(e)}"
+                    update_ui_safely(self.cloud_progress_ring)
+                    update_ui_safely(self.lbl_cloud_status)
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_fail)
+
+        threading.Thread(target=_async_refresh, daemon=True).start()
+
+    def sync_category_to_cloud(self, category_name: str):
+        """Convierte el modelo a TF.js y lo sube con labels.json a AWS S3."""
+        def _async_upload():
+            try:
+                def _ui_start():
+                    self.cloud_progress_ring.visible = True
+                    self.cloud_progress_bar.visible = True
+                    self.cloud_progress_bar.value = 0.1
+                    self.lbl_cloud_status.value = f"Iniciando compilación y sincronización de '{category_name.upper()}' con AWS S3..."
+                    update_ui_safely(self.cloud_progress_ring)
+                    update_ui_safely(self.cloud_progress_bar)
+                    update_ui_safely(self.lbl_cloud_status)
+
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_start)
+
+                def _prog(pct, msg):
+                    def _ui_prog():
+                        self.cloud_progress_bar.value = pct
+                        self.lbl_cloud_status.value = msg
+                        update_ui_safely(self.cloud_progress_bar)
+                        update_ui_safely(self.lbl_cloud_status)
+                    if self.page and hasattr(self.page, "run_thread"):
+                        self.page.run_thread(_ui_prog)
+
+                self.cloud_service.upload_category_model(category_name, progress_callback=_prog)
+
+                def _ui_success():
+                    self.cloud_progress_ring.visible = False
+                    self.cloud_progress_bar.value = 1.0
+                    self.lbl_cloud_status.value = f"¡Modelo '{category_name.upper()}' desplegado exitosamente en AWS S3!"
+                    show_snack_bar(self.page, f"¡'{category_name.upper()}' sincronizado con AWS S3 en formato TF.js!")
+                    self.refresh_cloud_table()
+
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_success)
+
+            except Exception as ex:
+                def _ui_err():
+                    self.cloud_progress_ring.visible = False
+                    self.cloud_progress_bar.visible = False
+                    self.lbl_cloud_status.value = f"Error en sincronización Cloud: {str(ex)}"
+                    show_snack_bar(self.page, f"Error AWS: {str(ex)}", is_error=True)
+                    show_error_popup(
+                        self.page,
+                        "Fallo de Sincronización Cloud (AWS S3)",
+                        f"No se pudo completar la transferencia a AWS S3 para '{category_name}':\n\n{str(ex)}"
+                    )
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_err)
+
+        threading.Thread(target=_async_upload, daemon=True).start()
+
+    def delete_category_from_cloud(self, category_name: str):
+        """Elimina todos los archivos del modelo en AWS S3."""
+        def _async_delete():
+            try:
+                def _ui_start():
+                    self.cloud_progress_ring.visible = True
+                    self.cloud_progress_bar.visible = True
+                    self.cloud_progress_bar.value = 0.3
+                    self.lbl_cloud_status.value = f"Eliminando archivos de '{category_name.upper()}' de AWS S3..."
+                    update_ui_safely(self.cloud_progress_ring)
+                    update_ui_safely(self.cloud_progress_bar)
+                    update_ui_safely(self.lbl_cloud_status)
+
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_start)
+
+                def _prog(pct, msg):
+                    def _ui_prog():
+                        self.cloud_progress_bar.value = pct
+                        self.lbl_cloud_status.value = msg
+                        update_ui_safely(self.cloud_progress_bar)
+                        update_ui_safely(self.lbl_cloud_status)
+                    if self.page and hasattr(self.page, "run_thread"):
+                        self.page.run_thread(_ui_prog)
+
+                self.cloud_service.delete_category_model(category_name, progress_callback=_prog)
+
+                def _ui_success():
+                    self.cloud_progress_ring.visible = False
+                    self.cloud_progress_bar.visible = False
+                    self.lbl_cloud_status.value = f"Modelo '{category_name.upper()}' eliminado de AWS S3."
+                    show_snack_bar(self.page, f"Modelo '{category_name.upper()}' eliminado de S3.")
+                    self.refresh_cloud_table()
+
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_success)
+
+            except Exception as ex:
+                def _ui_err():
+                    self.cloud_progress_ring.visible = False
+                    self.cloud_progress_bar.visible = False
+                    self.lbl_cloud_status.value = f"Error al eliminar en AWS: {str(ex)}"
+                    show_snack_bar(self.page, f"Error AWS: {str(ex)}", is_error=True)
+                    show_error_popup(
+                        self.page,
+                        "Fallo al Eliminar en AWS S3",
+                        f"No se pudo eliminar el modelo en AWS S3 para '{category_name}':\n\n{str(ex)}"
+                    )
+                if self.page and hasattr(self.page, "run_thread"):
+                    self.page.run_thread(_ui_err)
+
+        threading.Thread(target=_async_delete, daemon=True).start()
 
     def close(self):
         """Detiene de forma segura todos los servicios y bucles en segundo plano."""
@@ -1111,228 +1619,577 @@ class LSPUIController:
         except Exception:
             pass
 
-# --- CONSTRUCTORES DE VISTAS ESCOLARES (PESTAÑAS v4) ---
+# =========================================================================
+# CONSTRUCTORES DE VISTAS ESCOLARES SEGÚN GOOGLE STITCH
+# =========================================================================
 
 def build_training_view(controller: LSPUIController) -> ft.Container:
     """
-    Construye la vista de Captura y Entrenamiento:
-    - Panel izquierdo con Vocabulario en contenedor de scroll vertical fluido (height=240).
-    - Deslizadores de configuración (Espera y Frames) ubicados ergonómicamente al fondo del panel.
-    - Panel derecho con el monitor de cámara centrado (480x360).
+    Construye la vista de Captura y Entrenamiento (Stitch principal.png):
+    - Columna izquierda: 3 tarjetas blancas con bordes celestes (Categorías, Vocabulario scrollable 230px, Sliders).
+    - Columna derecha: Monitor de video 640x440 con overlays HUD MediaPipe + botones Encender Cámara y Entrenar.
     """
-    
-    # 1. Contenedor Scrollable de Palabras (Scroll Adaptativo Vertical Obligatorio)
-    words_scrollable_container = ft.Container(
-        content=controller.words_listview,
-        height=240,
-        border=ft.Border.all(1, "#D1E4F8"),
-        border_radius=12,
-        bgcolor="#FFFFFF",
-        padding=10
-    )
-
-    # 2. Deslizadores de Configuración reubicados en la parte inferior
-    sliders_bottom_card = ft.Container(
-        content=ft.Column([
-            ft.Row([
-                ft.Icon(ft.Icons.TUNE, size=15, color=COLOR_PRIMARY),
-                ft.Text("Configuración de Captura (Docente)", weight=ft.FontWeight.BOLD, color="#1A365D", size=13),
-            ], spacing=6),
-            ft.Row([
-                ft.Column([
-                    ft.Row([ft.Text("Espera (s):", size=11, color=COLOR_TEXT_BODY), controller.lbl_delay_val], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    controller.slider_delay
-                ], expand=True),
-                ft.Column([
-                    ft.Row([ft.Text("Muestras (frames):", size=11, color=COLOR_TEXT_BODY), controller.lbl_frames_val], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    controller.slider_frames
-                ], expand=True)
-            ], spacing=10)
-        ], spacing=4),
-        bgcolor="#FFFFFF",
-        border=ft.Border.all(1, "#D1E4F8"),
-        border_radius=10,
-        padding=10
-    )
-
-    # Panel Izquierdo Completo con estructura solicitada en muestra .md
-    panel_izquierdo = ft.Column([
-        ft.Text("1. Categorías de Estudio", size=15, color="#1A365D", weight=ft.FontWeight.BOLD),
-        ft.Row([
-            controller.new_category_input,
-            ft.IconButton(ft.Icons.ADD_CIRCLE, icon_color=COLOR_PRIMARY, on_click=controller.add_new_category, tooltip="Crear Categoría")
-        ], spacing=4),
-        ft.Row([
-            controller.category_dropdown,
-            controller.btn_edit_category,
-            controller.btn_delete_category,
-        ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=2),
-        
-        ft.Divider(height=10, color="#D1E4F8"),
-        
-        ft.Text("2. Vocabulario Registrado", size=15, color="#1A365D", weight=ft.FontWeight.BOLD),
-        ft.Row([
-            controller.new_word_input,
-            ft.IconButton(ft.Icons.ADD_TASK, icon_color=COLOR_PRIMARY, on_click=controller.add_new_word, tooltip="Agregar Palabra")
-        ], spacing=4),
-        
-        # Lista de palabras con scroll ("bajar y subir")
-        words_scrollable_container,
-        
-        ft.Divider(height=10, color="#D1E4F8"),
-        
-        # Deslizadores reubicados en la parte inferior
-        sliders_bottom_card
-    ], spacing=8, expand=True)
-
-    sidebar = ft.Container(
-        content=panel_izquierdo,
-        width=460,
-        bgcolor=COLOR_CARD_BG,
-        padding=14,
-        border_radius=12,
-        border=ft.Border.all(1, COLOR_BORDER)
-    )
-
-    # Panel Derecho: Monitor de Video Controlado y Centrado (480x360)
-    camera_panel = ft.Container(
+    # 1. Card 1: Categorías de Estudio
+    card_categorias = ft.Container(
         content=ft.Column([
             ft.Row([
                 ft.Row([
-                    ft.Icon(ft.Icons.CAMERA_ALT, color=COLOR_PRIMARY, size=18),
-                    ft.Text("Captura de Señas & Red Convolucional", size=14, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
+                    ft.Icon(ft.Icons.FOLDER_OPEN_OUTLINED, color=COLOR_PRIMARY, size=18),
+                    ft.Text("1. Categorías de Estudio", weight=ft.FontWeight.BOLD, size=13, color=COLOR_TEXT_TITLE)
                 ], spacing=6),
-                ft.Row([controller.switch_voice, controller.voice_badge], spacing=4)
+                ft.Container(
+                    content=ft.Text("GESTIÓN ACTIVA", size=10, weight=ft.FontWeight.BOLD, color=COLOR_PRIMARY),
+                    bgcolor=COLOR_PRIMARY_LIGHT,
+                    border_radius=4,
+                    padding=ft.Padding(6, 2, 6, 2)
+                )
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Row([
+                controller.new_category_input,
+                ft.IconButton(
+                    icon=ft.Icons.ADD,
+                    icon_color=ft.Colors.WHITE,
+                    bgcolor=COLOR_PRIMARY,
+                    icon_size=18,
+                    on_click=controller.add_new_category,
+                    tooltip="Crear Categoría",
+                    width=38,
+                    height=38
+                )
+            ], spacing=6),
+            ft.Row([
+                controller.category_dropdown,
+                controller.btn_edit_category,
+                controller.btn_delete_category,
+            ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=2)
+        ], spacing=8),
+        bgcolor=COLOR_CARD_BG,
+        border=ft.Border.all(1, COLOR_BORDER),
+        border_radius=12,
+        padding=12
+    )
+
+    # 2. Card 2: Vocabulario Registrado con scroll restringido de exactamente 230px
+    words_scrollable_container = ft.Container(
+        content=controller.words_listview,
+        height=230,  # Especificación de 230px
+        border=ft.Border.all(1, COLOR_BORDER),
+        border_radius=8,
+        bgcolor="#FFFFFF",
+        padding=6
+    )
+
+    card_vocabulario = ft.Container(
+        content=ft.Column([
+            ft.Row([
+                ft.Row([
+                    ft.Icon(ft.Icons.FORMAT_LIST_BULLETED_ROUNDED, color=COLOR_PRIMARY, size=18),
+                    ft.Text("2. Vocabulario Registrado", weight=ft.FontWeight.BOLD, size=13, color=COLOR_TEXT_TITLE)
+                ], spacing=6),
+                controller.lbl_queue_count
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Row([
+                controller.new_word_input,
+                ft.Button(
+                    content="+ Agregar",
+                    bgcolor=COLOR_PRIMARY,
+                    color=ft.Colors.WHITE,
+                    on_click=controller.add_new_word,
+                    height=38
+                )
+            ], spacing=6),
+            words_scrollable_container
+        ], spacing=8),
+        bgcolor=COLOR_CARD_BG,
+        border=ft.Border.all(1, COLOR_BORDER),
+        border_radius=12,
+        padding=12
+    )
+
+    # 3. Card 3: Configuración de Captura (Deslizadores al fondo)
+    card_sliders = ft.Container(
+        content=ft.Column([
+            ft.Row([
+                ft.Row([
+                    ft.Icon(ft.Icons.TUNE, size=16, color=COLOR_PRIMARY),
+                    ft.Text("Configuración de Captura", weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE, size=13),
+                ], spacing=6),
+                ft.Icon(ft.Icons.SETTINGS_OUTLINED, size=16, color=COLOR_TEXT_MUTED)
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Row([
+                ft.Column([
+                    ft.Row([
+                        ft.Text("Espera:", size=11, color=COLOR_TEXT_BODY),
+                        controller.lbl_delay_val,
+                        ft.Text("(1.0 - 5.0)", size=10, color=COLOR_TEXT_MUTED)
+                    ], spacing=4),
+                    controller.slider_delay
+                ], expand=True, spacing=2),
+                ft.Column([
+                    ft.Row([
+                        ft.Text("Muestras:", size=11, color=COLOR_TEXT_BODY),
+                        controller.lbl_frames_val,
+                        ft.Text("(20 - 60)", size=10, color=COLOR_TEXT_MUTED)
+                    ], spacing=4),
+                    controller.slider_frames
+                ], expand=True, spacing=2)
+            ], spacing=10)
+        ], spacing=4),
+        bgcolor=COLOR_CARD_BG,
+        border=ft.Border.all(1, COLOR_BORDER),
+        border_radius=12,
+        padding=12
+    )
+
+    # Columna Izquierda Completa
+    columna_izquierda = ft.Column([
+        card_categorias,
+        card_vocabulario,
+        card_sliders
+    ], spacing=10, width=410)
+
+    # Panel Derecho: Monitor de Video Controlado con Overlays HUD (Stitch principal.png)
+    monitor_camara = ft.Container(
+        content=ft.Column([
+            # Barra superior interna del monitor
+            ft.Row([
+                ft.Row([
+                    ft.Container(width=7, height=7, bgcolor="#10B981", border_radius=4),
+                    ft.Text("VISTA EN VIVO - MEDIAPIPE SKELETAL TRACKER", size=10, weight=ft.FontWeight.BOLD, color="#94A3B8")
+                ], spacing=6),
+                ft.Row([
+                    ft.Container(
+                        content=ft.Text("LSP MODEL v2.4", size=9, weight=ft.FontWeight.BOLD, color="#94A3B8"),
+                        bgcolor="#1E293B",
+                        border_radius=4,
+                        padding=ft.Padding(5, 2, 5, 2)
+                    ),
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.LOCK, size=10, color="#10B981"),
+                            ft.Text("CALIBRADO", size=9, weight=ft.FontWeight.BOLD, color="#10B981")
+                        ], spacing=3),
+                        bgcolor="#064E3B",
+                        border_radius=4,
+                        padding=ft.Padding(5, 2, 5, 2)
+                    )
+                ], spacing=6)
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             
-            # Monitor de video (480x360)
+            # Imagen de la Cámara
             ft.Container(
                 content=ft.Column([
                     controller.warning_banner,
                     controller.camera_view
-                ], spacing=4, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                border=ft.Border.all(2, COLOR_BORDER),
-                border_radius=12,
-                bgcolor="#0F172A",
-                padding=4,
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=2),
                 alignment=ft.Alignment.CENTER
             ),
-            
-            # Botones de Acción
+
+            # Barra inferior interna de HUD
+            ft.Row([
+                # HUD Izquierdo: Métricas y Estado
+                ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            controller.lbl_hud_fps,
+                            controller.lbl_hud_conf,
+                            controller.lbl_hud_hand
+                        ], spacing=8),
+                        controller.lbl_hud_status
+                    ], spacing=2),
+                    bgcolor="#1E293B",
+                    border_radius=6,
+                    padding=ft.Padding(8, 4, 8, 4)
+                ),
+                # HUD Derecho: Patrón Objetivo
+                ft.Container(
+                    content=ft.Row([
+                        controller.lbl_hud_target,
+                        ft.Icon(ft.Icons.PAN_TOOL_ALT, size=14, color="#38BDF8")
+                    ], spacing=4),
+                    bgcolor="#1E293B",
+                    border_radius=6,
+                    padding=ft.Padding(8, 6, 8, 6)
+                )
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        ], spacing=6),
+        bgcolor=COLOR_DARK_MONITOR,
+        border=ft.Border.all(2, COLOR_BORDER),
+        border_radius=12,
+        padding=10,
+        width=640
+    )
+
+    columna_derecha = ft.Container(
+        content=ft.Column([
+            ft.Row([
+                ft.Text("Monitor de Captura y Tracking 3D", size=14, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
+                ft.Row([controller.switch_voice, controller.voice_badge], spacing=4)
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            monitor_camara,
             ft.Row([
                 controller.btn_camera,
                 controller.btn_generate_cnn
-            ], alignment=ft.MainAxisAlignment.CENTER, spacing=12)
-        ], spacing=10, alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-        expand=True,
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=16)
+        ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
         bgcolor=COLOR_CARD_BG,
-        padding=14,
+        border=ft.Border.all(1, COLOR_BORDER),
         border_radius=12,
-        border=ft.Border.all(1, COLOR_BORDER)
+        padding=14,
+        expand=True
     )
 
     return ft.Container(
-        content=ft.Row([sidebar, camera_panel], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START, spacing=14),
-        padding=4
+        content=ft.Row([columna_izquierda, columna_derecha], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START, spacing=14),
+        padding=0
     )
 
 def build_live_testing_view(controller: LSPUIController) -> ft.Container:
     """
-    Construye la vista de Pruebas y Validación en Vivo (Traductor):
-    - Selector de modelos entrenados de data/modelos/.
-    - Monitor de cámara web (480x360).
-    - Tarjeta gigante blanca con la palabra traducida y barra de confianza.
-    - Síntesis de voz offline con pyttsx3.
+    Construye la vista de Pruebas y Validación en Vivo (Stitch test.png):
+    - Columna izquierda: Selección de modelo + Lista de señas registradas + Info técnica.
+    - Columna derecha: Monitor 640x310 con HUD de prueba + Tarjeta gigante con tipografía 45px y barra de confianza.
     """
-    return ft.Container(
+    # 1. Card 1: Seleccionar Categoría
+    card_select = ft.Container(
         content=ft.Column([
             ft.Row([
-                ft.Icon(ft.Icons.ANALYTICS_OUTLINED, color=COLOR_PRIMARY, size=24),
-                ft.Text("Validación de Señas en Vivo con Síntesis de Voz (pyttsx3)", size=16, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
-            ], spacing=8),
-            ft.Divider(height=8, color=COLOR_BORDER),
-            
-            # Fila de Controles y Selector de Modelos
-            ft.Row([
-                controller.test_category_dropdown,
-                controller.btn_toggle_test,
-                ft.IconButton(
-                    icon=ft.Icons.REFRESH,
-                    icon_color=COLOR_PRIMARY,
-                    tooltip="Recargar modelos de la carpeta data/modelos/",
-                    on_click=lambda e: controller.load_trained_models_to_test_dropdown()
-                )
-            ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
-            
-            ft.Row([
-                # Monitor de video en vivo (480x360)
+                ft.Row([
+                    ft.Container(
+                        content=ft.Text("1", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+                        bgcolor=COLOR_PRIMARY,
+                        border_radius=10,
+                        width=20,
+                        height=20,
+                        alignment=ft.Alignment.CENTER
+                    ),
+                    ft.Text("Seleccionar Categoría", weight=ft.FontWeight.BOLD, size=13, color=COLOR_TEXT_TITLE)
+                ], spacing=6),
                 ft.Container(
-                    content=controller.test_camera_view,
-                    border=ft.Border.all(2, COLOR_BORDER),
-                    border_radius=12,
-                    bgcolor="#0F172A",
-                    padding=4,
-                    alignment=ft.Alignment.CENTER
-                ),
-                
-                # Panel de Salida: Tipografía Gigante y Síntesis de Voz
-                ft.Container(
-                    content=ft.Column([
-                        ft.Row([
-                            ft.Icon(ft.Icons.RECORD_VOICE_OVER, color=COLOR_PRIMARY, size=20),
-                            ft.Text("Traducción en Tiempo Real", size=14, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
-                        ], spacing=6),
-                        
-                        # Tarjeta Blanca Pura con Bordes Celestes
-                        ft.Container(
-                            content=ft.Column([
-                                ft.Text("PALABRA DETECTADA", size=11, weight=ft.FontWeight.BOLD, color=COLOR_PRIMARY),
-                                controller.lbl_prediction,  # Tipografía gigante
-                                ft.Container(height=4),
-                                controller.lbl_confidence,  # Porcentaje
-                                controller.progress_bar_prediction,  # Barra celeste
-                                ft.Container(height=4),
-                                ft.Row([
-                                    ft.Icon(ft.Icons.VOLUME_UP, size=15, color=COLOR_TEXT_MUTED),
-                                    ft.Text("Voz activa (>85% sostenido en 10 frames)", size=11, color=COLOR_TEXT_MUTED)
-                                ], spacing=4, alignment=ft.MainAxisAlignment.CENTER)
-                            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4),
-                            bgcolor="#FFFFFF",
-                            border=ft.Border.all(2, COLOR_BORDER),
-                            border_radius=12,
-                            padding=16,
-                            alignment=ft.Alignment.CENTER,
-                            width=460,
-                            height=240
-                        ),
-                        controller.test_status_text
-                    ], spacing=10),
-                    padding=6,
-                    expand=True
+                    content=ft.Text("v2.4 LSP", size=9, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
+                    bgcolor="#F1F5F9",
+                    border_radius=4,
+                    padding=ft.Padding(5, 2, 5, 2)
                 )
-            ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START, spacing=14)
-        ], spacing=10),
-        padding=14,
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            controller.test_category_dropdown,
+            controller.btn_toggle_test
+        ], spacing=8),
         bgcolor=COLOR_CARD_BG,
+        border=ft.Border.all(1, COLOR_BORDER),
         border_radius=12,
-        border=ft.Border.all(1, COLOR_BORDER)
+        padding=12
+    )
+
+    # 2. Card 2: Señas Registradas (con scroll)
+    card_classes = ft.Container(
+        content=ft.Column([
+            ft.Row([
+                ft.Row([
+                    ft.Container(
+                        content=ft.Text("2", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+                        bgcolor=COLOR_PRIMARY,
+                        border_radius=10,
+                        width=20,
+                        height=20,
+                        alignment=ft.Alignment.CENTER
+                    ),
+                    ft.Text("Señas Registradas", weight=ft.FontWeight.BOLD, size=13, color=COLOR_TEXT_TITLE)
+                ], spacing=6),
+                controller.lbl_test_classes_count
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Container(
+                content=controller.test_classes_listview,
+                height=230,
+                border=ft.Border.all(1, COLOR_BORDER),
+                border_radius=8,
+                padding=6
+            )
+        ], spacing=8),
+        bgcolor=COLOR_CARD_BG,
+        border=ft.Border.all(1, COLOR_BORDER),
+        border_radius=12,
+        padding=12
+    )
+
+    # 3. Card 3: Información Técnica del Modelo
+    card_tech_info = ft.Container(
+        content=ft.Column([
+            ft.Row([
+                ft.Text("Red Neuronal:", size=11, color=COLOR_TEXT_MUTED),
+                ft.Text("CNN 1D + MediaPipe 3D", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Row([
+                ft.Text("Latencia de Red:", size=11, color=COLOR_TEXT_MUTED),
+                ft.Text("~40 ms", size=11, weight=ft.FontWeight.BOLD, color=COLOR_PRIMARY)
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Row([
+                ft.Text("Voz Sintetizada:", size=11, color=COLOR_TEXT_MUTED),
+                ft.Text("ES-PE (pyttsx3 Offline)", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        ], spacing=4),
+        bgcolor=COLOR_CARD_BG,
+        border=ft.Border.all(1, COLOR_BORDER),
+        border_radius=12,
+        padding=10
+    )
+
+    columna_izquierda_test = ft.Column([
+        card_select,
+        card_classes,
+        card_tech_info
+    ], spacing=10, width=340)
+
+    # Panel Derecho: Monitor de Inferencia + Tarjeta Gigante
+    monitor_test = ft.Container(
+        content=ft.Column([
+            # Header del monitor
+            ft.Row([
+                ft.Row([
+                    ft.Container(width=7, height=7, bgcolor=COLOR_REC_BTN, border_radius=4),
+                    ft.Text("CÁMARA DOCENTE EN VIVO", size=10, weight=ft.FontWeight.BOLD, color="#F8FAFC"),
+                    ft.Container(
+                        content=ft.Text("21 Landmarks 3D", size=9, color="#94A3B8"),
+                        bgcolor="#1E293B",
+                        border_radius=4,
+                        padding=ft.Padding(5, 2, 5, 2)
+                    )
+                ], spacing=6),
+                ft.Text("FPS: 25.0   Resolución: 640x480", size=10, color="#94A3B8")
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            
+            # Imagen de video
+            ft.Container(
+                content=controller.test_camera_view,
+                alignment=ft.Alignment.CENTER
+            ),
+
+            # Barra inferior del monitor
+            ft.Row([
+                ft.Row([
+                    ft.Container(
+                        content=ft.Text("Pausar Captura", size=10, color="#E2E8F0"),
+                        bgcolor="#1E293B",
+                        border_radius=4,
+                        padding=ft.Padding(6, 3, 6, 3)
+                    ),
+                    ft.Container(
+                        content=ft.Text("Ocultar Malla", size=10, color="#E2E8F0"),
+                        bgcolor="#1E293B",
+                        border_radius=4,
+                        padding=ft.Padding(6, 3, 6, 3)
+                    )
+                ], spacing=6),
+                ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.PAN_TOOL, size=12, color=COLOR_PRIMARY),
+                        ft.Text("Mano en Cuadro: Derecha (Principal)", size=10, weight=ft.FontWeight.BOLD, color="#93C5FD")
+                    ], spacing=4),
+                    bgcolor="#1E293B",
+                    border_radius=4,
+                    padding=ft.Padding(6, 3, 6, 3)
+                )
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        ], spacing=6),
+        bgcolor=COLOR_DARK_MONITOR,
+        border=ft.Border.all(2, COLOR_BORDER),
+        border_radius=12,
+        padding=10,
+        width=640
+    )
+
+    # Tarjeta de Traducción Gigante (Tipografía 45px - Stitch test.png)
+    tarjeta_gigante = ft.Container(
+        content=ft.Column([
+            # Fila de cabecera
+            ft.Row([
+                ft.Row([
+                    ft.Icon(ft.Icons.TRANSLATE, color=COLOR_PRIMARY, size=18),
+                    ft.Text("TRADUCCIÓN LSP EN TIEMPO REAL", size=12, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+                ], spacing=6),
+                ft.Row([
+                    ft.Button(
+                        content="🔊 Pronunciar",
+                        bgcolor=COLOR_PRIMARY_LIGHT,
+                        color=COLOR_PRIMARY,
+                        height=30,
+                        on_click=controller.trigger_tts_pronounce
+                    ),
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Container(width=6, height=6, bgcolor="#10B981", border_radius=3),
+                            ft.Text("Detección Continua", size=10, weight=ft.FontWeight.BOLD, color=COLOR_PRIMARY)
+                        ], spacing=4),
+                        bgcolor=COLOR_PRIMARY_LIGHT,
+                        border_radius=10,
+                        padding=ft.Padding(8, 4, 8, 4)
+                    )
+                ], spacing=6)
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+
+            # Palabra detectada en letras gigantes (size=45) y porcentaje
+            ft.Row([
+                ft.Row([
+                    controller.lbl_prediction,
+                    controller.lbl_prediction_badge
+                ], spacing=8, alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Column([
+                    controller.lbl_confidence,
+                    ft.Text("Nivel de Confianza", size=10, color=COLOR_TEXT_MUTED)
+                ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.END)
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+
+            # Barra de progreso
+            controller.progress_bar_prediction,
+
+            # Pie de tarjeta
+            ft.Row([
+                controller.lbl_detection_state,
+                controller.test_status_text
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        ], spacing=8),
+        bgcolor=COLOR_CARD_BG,
+        border=ft.Border.all(2, COLOR_BORDER),
+        border_radius=12,
+        padding=14,
+        width=640
+    )
+
+    columna_derecha_test = ft.Container(
+        content=ft.Column([
+            monitor_test,
+            tarjeta_gigante
+        ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+        bgcolor=COLOR_CARD_BG,
+        border=ft.Border.all(1, COLOR_BORDER),
+        border_radius=12,
+        padding=14,
+        expand=True
+    )
+
+    return ft.Container(
+        content=ft.Row([columna_izquierda_test, columna_derecha_test], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START, spacing=14),
+        padding=0
+    )
+
+def build_cloud_view(controller: LSPUIController) -> ft.Container:
+    """
+    Construye la vista de Sincronización y Despliegue en la Nube (AWS S3):
+    - Encabezado con banner de nube, bucket activo y botón de recarga.
+    - Tabla/lista de categorías con estado local (.keras), estado en S3 (TF.js) y botones de acción.
+    - Consola inferior de transferencia con barra de progreso lineal en tiempo real.
+    """
+    # 1. Encabezado de Nube
+    card_header = ft.Container(
+        content=ft.Row([
+            ft.Row([
+                ft.Container(
+                    content=ft.Icon(ft.Icons.CLOUD_SYNC, color=COLOR_PRIMARY, size=24),
+                    bgcolor=COLOR_PRIMARY_LIGHT,
+                    border_radius=8,
+                    padding=8
+                ),
+                ft.Column([
+                    ft.Text("PANEL DE SINCRONIZACIÓN Y DESPLIEGUE CLOUD", size=14, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
+                    ft.Text("Sincronización bidireccional con AWS S3 y compilación a TensorFlow.js para el cliente web", size=11, color=COLOR_TEXT_MUTED)
+                ], spacing=1)
+            ], spacing=10),
+            ft.Row([
+                ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.STORAGE, size=14, color=COLOR_PRIMARY),
+                        ft.Text(f"Bucket: {controller.cloud_service.bucket_name or 'No configurado'}", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+                    ], spacing=6),
+                    bgcolor=COLOR_PRIMARY_LIGHT,
+                    border_radius=8,
+                    padding=ft.Padding(10, 6, 10, 6)
+                ),
+                ft.Button(
+                    content="Refrescar Estados",
+                    icon=ft.Icons.REFRESH,
+                    bgcolor=COLOR_PRIMARY,
+                    color=ft.Colors.WHITE,
+                    on_click=controller.refresh_cloud_table,
+                    height=36
+                )
+            ], spacing=10)
+        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        bgcolor=COLOR_CARD_BG,
+        border=ft.Border.all(1, COLOR_BORDER),
+        border_radius=12,
+        padding=12
+    )
+
+    # 2. Tabla de Categorías de Sincronización
+    table_header = ft.Container(
+        content=ft.Row([
+            ft.Container(ft.Text("CATEGORÍA DE SEÑAS", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=220),
+            ft.Container(ft.Text("MODELO LOCAL (.KERAS)", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=190),
+            ft.Container(ft.Text("ESTADO EN AWS S3 (TF.JS)", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), width=220),
+            ft.Container(ft.Text("ACCIONES DE SINCRONIZACIÓN", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED), expand=True)
+        ], alignment=ft.MainAxisAlignment.START),
+        padding=ft.Padding(12, 6, 12, 6),
+        bgcolor="#F8FAFC",
+        border_radius=8
+    )
+
+    card_table = ft.Container(
+        content=ft.Column([
+            table_header,
+            ft.Container(
+                content=controller.cloud_categories_listview,
+                height=380,
+                padding=2
+            )
+        ], spacing=6),
+        bgcolor=COLOR_CARD_BG,
+        border=ft.Border.all(1, COLOR_BORDER),
+        border_radius=12,
+        padding=12,
+        expand=True
+    )
+
+    # 3. Consola de Transferencia Inferior
+    card_console = ft.Container(
+        content=ft.Column([
+            ft.Row([
+                controller.cloud_progress_ring,
+                controller.lbl_cloud_status
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            controller.cloud_progress_bar
+        ], spacing=6),
+        bgcolor=COLOR_CARD_BG,
+        border=ft.Border.all(1, COLOR_BORDER),
+        border_radius=10,
+        padding=10
+    )
+
+    return ft.Container(
+        content=ft.Column([
+            card_header,
+            card_table,
+            card_console
+        ], spacing=10, expand=True),
+        padding=0
     )
 
 def build_main_app_tabs(controller: LSPUIController) -> ft.Tabs:
     """
-    Implementa el control de pestañas nativo ft.Tabs conectando TabBar y TabBarView.
-    - Pestaña 1 (Captura y Entrenamiento): Grilla de grabación y gestión de señas.
-    - Pestaña 2 (Prueba en Vivo del Traductor): Monitor, inferencia con letras gigantes y TTS.
-    - Apaga la cámara automáticamente al cambiar de pestaña para prevenir colisiones de hardware.
+    Implementa el control de pestañas nativo ft.Tabs conectado a las tres vistas de la aplicación:
+    1. Captura y Entrenamiento
+    2. Prueba en Vivo del Traductor
+    3. Nube / AWS
     """
     view_training = build_training_view(controller)
     view_testing = build_live_testing_view(controller)
+    view_cloud = build_cloud_view(controller)
 
     tab1 = ft.Tab(label="Captura y Entrenamiento", icon=ft.Icons.SCHOOL)
     tab2 = ft.Tab(label="Prueba en Vivo del Traductor", icon=ft.Icons.FACT_CHECK)
+    tab3 = ft.Tab(label="Nube / AWS", icon=ft.Icons.CLOUD_SYNC)
 
     tab_bar = ft.TabBar(
-        tabs=[tab1, tab2],
+        tabs=[tab1, tab2, tab3],
         divider_color=COLOR_BORDER,
         indicator_color=COLOR_PRIMARY,
         label_color=COLOR_PRIMARY,
@@ -1343,7 +2200,8 @@ def build_main_app_tabs(controller: LSPUIController) -> ft.Tabs:
         expand=True,
         controls=[
             view_training,
-            view_testing
+            view_testing,
+            view_cloud
         ]
     )
 
@@ -1353,24 +2211,10 @@ def build_main_app_tabs(controller: LSPUIController) -> ft.Tabs:
         except Exception:
             new_idx = getattr(tabs, "selected_index", 0)
 
-        # 1. Apagar cámara si estaba activa para evitar colisiones de hardware entre pestañas
-        if controller.is_camera_active:
-            controller.toggle_camera(None)
-
-        if controller.is_testing:
-            controller.toggle_live_test(None)
-
-        # 2. Control de contexto de voz y recarga de modelos
-        if new_idx == 0:
-            controller.voice_service.allow_voice_trigger = True
-            print("[Tabs] Pestaña Captura activa: allow_voice_trigger = True")
-        else:
-            controller.voice_service.allow_voice_trigger = False
-            controller.load_trained_models_to_test_dropdown()
-            print("[Tabs] Pestaña Pruebas activa: allow_voice_trigger = False")
+        controller.switch_tab(new_idx)
 
     tabs = ft.Tabs(
-        length=2,
+        length=3,
         height=680,
         content=ft.Column(expand=True, controls=[tab_bar, tab_view], spacing=6),
         on_change=on_tab_change

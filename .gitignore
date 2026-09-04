@@ -12,3 +12,4 @@ __pycache__/
 # Ignorar modelos pesados y datos de entrenamiento si no quieres subirlos
 modelos/*.h5
 dataset/
+muestras/

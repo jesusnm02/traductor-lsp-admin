@@ -4,17 +4,29 @@ import shutil
 import numpy as np
 import pandas as pd
 
+SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(SRC_DIR)
+DATA_DIR = os.path.join(ROOT_DIR, "data")
+MUESTRAS_DIR = os.path.join(DATA_DIR, "muestras")
+MODELOS_DIR = os.path.join(DATA_DIR, "modelos")
+
+os.makedirs(MUESTRAS_DIR, exist_ok=True)
+os.makedirs(MODELOS_DIR, exist_ok=True)
+
 class LSPDataManager:
-    def __init__(self, base_dir="data/muestras"):
+    def __init__(self, base_dir=None):
         """
         Gestor de persistencia de datos y metadatos para el traductor LSP.
-        
-        Args:
-            base_dir (str): Directorio raíz donde se almacenan las categorías y secuencias.
+        Usa rutas absolutas para no verse afectado por el CWD de Flet.
         """
-        self.base_dir = base_dir
-        if not os.path.exists(self.base_dir):
-            os.makedirs(self.base_dir, exist_ok=True)
+        if base_dir is None:
+            self.base_dir = MUESTRAS_DIR
+        elif not os.path.isabs(base_dir):
+            self.base_dir = os.path.join(ROOT_DIR, base_dir)
+        else:
+            self.base_dir = base_dir
+            
+        os.makedirs(self.base_dir, exist_ok=True)
 
     def _get_category_dir(self, category_name: str) -> str:
         """Retorna la ruta del directorio físico de una categoría."""
@@ -141,7 +153,8 @@ class LSPDataManager:
     def delete_word(self, category_name: str, word: str) -> bool:
         """
         Elimina físicamente la carpeta de la palabra con todas sus muestras
-        y la retira de los metadatos de la categoría.
+        y la retira de los metadatos de la categoría. Si existía un modelo entrenado
+        con esta palabra, retira el modelo desactualizado para forzar regeneración.
         """
         word_clean = word.lower().strip()
         word_dir = self._get_word_dir(category_name, word_clean)
@@ -149,11 +162,32 @@ class LSPDataManager:
             shutil.rmtree(word_dir)
 
         metadata = self._load_metadata(category_name)
+        removed = False
         if word_clean in metadata.get("words", []):
             metadata["words"].remove(word_clean)
             self._save_metadata(category_name, metadata)
-            return True
-        return False
+            removed = True
+
+        # Sincronización de negocio: si había un modelo que incluía esta palabra, retirarlo
+        cat_clean = category_name.lower().strip()
+        model_cat_dir = os.path.join(MODELOS_DIR, cat_clean)
+        labels_file = os.path.join(model_cat_dir, "labels.json")
+        if os.path.exists(labels_file):
+            try:
+                with open(labels_file, 'r', encoding='utf-8') as f:
+                    curr_labels = json.load(f)
+                label_vals = [str(v).lower().strip() for v in curr_labels.values()] if isinstance(curr_labels, dict) else [str(v).lower().strip() for v in curr_labels]
+                if word_clean in label_vals:
+                    model_keras = os.path.join(model_cat_dir, "model.keras")
+                    if os.path.exists(model_keras):
+                        os.remove(model_keras)
+                    if os.path.exists(labels_file):
+                        os.remove(labels_file)
+                    print(f"[DATA] Modelo desactualizado de '{category_name}' retirado tras eliminar la palabra '{word}'.")
+            except Exception as ex:
+                print(f"[DATA] Advertencia al sincronizar modelo tras borrado: {ex}")
+
+        return removed
 
     def save_sequence(self, category_name: str, word: str, sequence_data) -> str:
         """

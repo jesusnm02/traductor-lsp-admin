@@ -7,21 +7,28 @@ from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization, In
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from sklearn.model_selection import train_test_split
 import subprocess
-from src.data_manager import LSPDataManager
+SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(SRC_DIR)
+DATA_DIR = os.path.join(ROOT_DIR, "data")
+MODELOS_DIR = os.path.join(DATA_DIR, "modelos")
+
+os.makedirs(MODELOS_DIR, exist_ok=True)
 
 class LSPTrainer:
-    def __init__(self, dataset_manager: LSPDataManager, export_base_dir="data/modelos"):
+    def __init__(self, dataset_manager: LSPDataManager, export_base_dir=None):
         """
         Clase encargada de entrenar las redes neuronales por categoría y exportarlas a TensorFlow.js.
-        
-        Args:
-            dataset_manager (LSPDatasetManager): Gestor de persistencia de datos.
-            export_base_dir (str): Directorio donde se guardarán los modelos listos para producción.
+        Usa rutas absolutas para persistencia bajo el directorio raíz.
         """
         self.dataset_manager = dataset_manager
-        self.export_base_dir = export_base_dir
-        if not os.path.exists(self.export_base_dir):
-            os.makedirs(self.export_base_dir, exist_ok=True)
+        if export_base_dir is None:
+            self.export_base_dir = MODELOS_DIR
+        elif not os.path.isabs(export_base_dir):
+            self.export_base_dir = os.path.join(ROOT_DIR, export_base_dir)
+        else:
+            self.export_base_dir = export_base_dir
+
+        os.makedirs(self.export_base_dir, exist_ok=True)
 
     def build_model(self, num_classes, input_shape=(30, 255)):
         """

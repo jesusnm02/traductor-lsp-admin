@@ -164,11 +164,6 @@ class LSPVisionService:
         color_blanco = (255, 255, 255)
         color_rojo_labios = (92, 92, 226)    # #E25C5C en BGR (rojo amigable para labios)
         color_boca_abierta = (25, 20, 30)    # Cavidad bucal oscura en gesticulación
-        color_mejillas = (195, 185, 245)     # Rosa suave para coloretes pedagógicos
-
-        # Distintivo superior de Privacidad pedagógica
-        cv2.putText(canvas, "AVATAR DIDACTICO DE PRIVACIDAD", (16, 26),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.45, color_azul_marino, 1, cv2.LINE_AA)
 
         FINGER_CONNECTIONS = [
             (1, 2), (2, 3), (3, 4),        # Pulgar
@@ -226,27 +221,19 @@ class LSPVisionService:
                 head_center = (cx, cy)
                 sh_dist = int(w * 0.36)
 
-                # 1. Torso y Camiseta Negra con cuello en V sutil (Avatar.png)
-                ls_def = (cx - sh_dist // 2, cy + int(head_ry * 1.35))
-                rs_def = (cx + sh_dist // 2, cy + int(head_ry * 1.35))
+                # 1. Torso y Camiseta Negra conectándose directamente bajo la barbilla
+                chin_y = cy + head_ry
+                ls_def = (cx - sh_dist // 2, chin_y + 40)
+                rs_def = (cx + sh_dist // 2, chin_y + 40)
                 shirt_poly = np.array([
-                    [cx - 24, cy + head_ry + 10],
+                    [cx - 24, chin_y - 2],
                     [ls_def[0] - 12, ls_def[1]],
                     [ls_def[0] - 35, h],
                     [rs_def[0] + 35, h],
                     [rs_def[0] + 12, rs_def[1]],
-                    [cx + 24, cy + head_ry + 10]
+                    [cx + 24, chin_y - 2]
                 ], dtype=np.int32)
                 cv2.fillPoly(canvas, [shirt_poly], color_camiseta, cv2.LINE_AA)
-
-                # Cuello en V
-                v_neck = np.array([
-                    [cx - 24, cy + head_ry + 10],
-                    [cx, cy + head_ry + 26],
-                    [cx + 24, cy + head_ry + 10]
-                ], dtype=np.int32)
-                cv2.fillPoly(canvas, [v_neck], color_piel, cv2.LINE_AA)
-                cv2.polylines(canvas, [v_neck], False, (50, 45, 45), 2, cv2.LINE_AA)
 
                 # Brazos y Antebrazos en tono piel
                 le_def = (ls_def[0] - 25, int(h * 0.74))
@@ -270,16 +257,7 @@ class LSPVisionService:
                     cv2.circle(canvas, wpt, 4, color_blanco, -1, cv2.LINE_AA)
                     cv2.circle(canvas, wpt, 4, color_celeste, 1, cv2.LINE_AA)
 
-                # 2. Cuello
-                neck_pts = np.array([
-                    [cx - 20, cy + int(head_ry * 0.65)],
-                    [cx + 20, cy + int(head_ry * 0.65)],
-                    [cx + 28, cy + head_ry + 14],
-                    [cx - 28, cy + head_ry + 14]
-                ], dtype=np.int32)
-                cv2.fillPoly(canvas, [neck_pts], color_piel, cv2.LINE_AA)
-
-                # 3. Orejas y Cabeza de Color Piel (#FCE2C6)
+                # 2. Orejas y Cabeza de Color Piel (#FCE2C6) (Rostro limpio sin mejillas ni cuello largo)
                 cv2.circle(canvas, (cx - head_rx + 2, cy + 2), 12, color_piel, -1, cv2.LINE_AA)
                 cv2.circle(canvas, (cx - head_rx + 2, cy + 2), 12, color_piel_borde, 2, cv2.LINE_AA)
                 cv2.circle(canvas, (cx + head_rx - 2, cy + 2), 12, color_piel, -1, cv2.LINE_AA)
@@ -288,15 +266,36 @@ class LSPVisionService:
                 cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, color_piel, -1, cv2.LINE_AA)
                 cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, color_piel_borde, 2, cv2.LINE_AA)
 
-                # 4. Cabello de "Palitos" Minimalista Infantil (3 a 5 trazos de caricatura)
-                top_x, top_y = cx, cy - head_ry
-                cv2.line(canvas, (top_x, top_y), (top_x, top_y - 32), (15, 18, 28), 4, cv2.LINE_AA)
-                cv2.line(canvas, (top_x - 12, top_y + 3), (top_x - 24, top_y - 26), (15, 18, 28), 4, cv2.LINE_AA)
-                cv2.line(canvas, (top_x + 12, top_y + 3), (top_x + 24, top_y - 26), (15, 18, 28), 4, cv2.LINE_AA)
-                cv2.line(canvas, (top_x - 24, top_y + 8), (top_x - 40, top_y - 16), (15, 18, 28), 4, cv2.LINE_AA)
-                cv2.line(canvas, (top_x + 24, top_y + 8), (top_x + 40, top_y - 16), (15, 18, 28), 4, cv2.LINE_AA)
+                # 3. Cabello Completo, Natural y Estilizado (Polígono cerrado en color oscuro estilo Avatar.png)
+                vol = 35
+                top_y = cy - head_ry
+                hair_pts = [
+                    # Límite de frente y cejas
+                    [cx - int(head_rx * 0.95), cy - int(head_ry * 0.15)],
+                    [cx - int(head_rx * 0.80), cy - int(head_ry * 0.38)],
+                    [cx - int(head_rx * 0.50), cy - int(head_ry * 0.52)],
+                    [cx - int(head_rx * 0.25), cy - int(head_ry * 0.60)],
+                    [cx, cy - int(head_ry * 0.55)],
+                    [cx + int(head_rx * 0.25), cy - int(head_ry * 0.60)],
+                    [cx + int(head_rx * 0.50), cy - int(head_ry * 0.52)],
+                    [cx + int(head_rx * 0.80), cy - int(head_ry * 0.38)],
+                    [cx + int(head_rx * 0.95), cy - int(head_ry * 0.15)],
+                    # Cúpula de volumen superior sobre el cráneo (+35px)
+                    [cx + int(head_rx * 1.05), cy - int(head_ry * 0.35)],
+                    [cx + int(head_rx * 0.95), top_y],
+                    [cx + int(head_rx * 0.65), top_y - int(vol * 0.75)],
+                    [cx + int(head_rx * 0.30), top_y - int(vol * 0.95)],
+                    [cx, top_y - vol],
+                    [cx - int(head_rx * 0.30), top_y - int(vol * 0.95)],
+                    [cx - int(head_rx * 0.65), top_y - int(vol * 0.75)],
+                    [cx - int(head_rx * 0.95), top_y],
+                    [cx - int(head_rx * 1.05), cy - int(head_ry * 0.35)]
+                ]
+                hair_poly = np.array(hair_pts, dtype=np.int32)
+                cv2.fillPoly(canvas, [hair_poly], color_cabello, cv2.LINE_AA)
+                cv2.polylines(canvas, [hair_poly], True, (10, 12, 20), 2, cv2.LINE_AA)
 
-                # 5. Ojos Grandes Azul Marino con Brillo Blanco
+                # 4. Ojos Grandes Azul Marino con Brillo Blanco
                 lec = (cx - eye_dist // 2, cy - 4)
                 rec = (cx + eye_dist // 2, cy - 4)
                 for ec in [lec, rec]:
@@ -308,9 +307,7 @@ class LSPVisionService:
                 cv2.line(canvas, (lec[0] - 14, lec[1] - 12), (lec[0] + 12, lec[1] - 14), color_cabello, 5, cv2.LINE_AA)
                 cv2.line(canvas, (rec[0] - 12, rec[1] - 14), (rec[0] + 14, rec[1] - 12), color_cabello, 5, cv2.LINE_AA)
 
-                # Mejillas sonrosadas y Nariz
-                cv2.circle(canvas, (lec[0] - 8, lec[1] + 18), 10, color_mejillas, -1, cv2.LINE_AA)
-                cv2.circle(canvas, (rec[0] + 8, rec[1] + 18), 10, color_mejillas, -1, cv2.LINE_AA)
+                # Nariz limpia
                 cv2.circle(canvas, (cx, cy + 12), 3, color_piel_borde, -1, cv2.LINE_AA)
 
                 # Sonrisa amigable
@@ -354,26 +351,74 @@ class LSPVisionService:
                 lw = (ls[0] - 10, int(h * 0.88))
                 rw = (rs[0] + 10, int(h * 0.88))
 
-            # Polígono trapezoidal sólido de la camiseta negra
+            # --- A. Torso y Camiseta Escolar (Estilo Avatar.png con cuello acortado) ---
+            pose = landmarks.get("pose") if landmarks else None
+
+            if has_pose:
+                ls = (int(pose[0][0] * w), int(pose[0][1] * h))
+                rs = (int(pose[1][0] * w), int(pose[1][1] * h))
+                le = (int(pose[2][0] * w), int(pose[2][1] * h))
+                re = (int(pose[3][0] * w), int(pose[3][1] * h))
+                lw = (int(pose[4][0] * w), int(pose[4][1] * h))
+                rw = (int(pose[5][0] * w), int(pose[5][1] * h))
+                sh_dist = max(50, int(np.linalg.norm(np.array(ls) - np.array(rs))))
+            else:
+                sh_dist = int(w * 0.35)
+                cx = w // 2
+                ls = (cx - sh_dist // 2, int(h * 0.54))
+                rs = (cx + sh_dist // 2, int(h * 0.54))
+                le = (ls[0] - 25, int(h * 0.74))
+                re = (rs[0] + 25, int(h * 0.74))
+                lw = (ls[0] - 10, int(h * 0.88))
+                rw = (rs[0] + 10, int(h * 0.88))
+
+            # Obtener barbilla (landmark 152) para anclar la camiseta directamente
+            FACEMESH_CONTOUR = [
+                10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378,
+                400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21,
+                54, 103, 67, 109
+            ]
+
+            face_pts = None
+            if hlm is not None:
+                face_pts = np.array([[int(hlm[idx].x * w), int(hlm[idx].y * h)] for idx in FACEMESH_CONTOUR], dtype=np.int32)
+                head_center = (int(np.mean(face_pts[:, 0])), int(np.mean(face_pts[:, 1])))
+                chin_pt = (int(hlm[152].x * w), int(hlm[152].y * h))
+                left_eye_center = (int(hlm[159].x * w), int(hlm[159].y * h))
+                right_eye_center = (int(hlm[386].x * w), int(hlm[386].y * h))
+                eye_dist = max(20, int(np.linalg.norm(np.array(left_eye_center) - np.array(right_eye_center))))
+                chin_x, chin_y = chin_pt[0], chin_pt[1]
+            else:
+                face = landmarks.get("face") if landmarks else None
+                if face is not None and not np.all(face == 0.0) and len(face) >= 37:
+                    nose_pt = (int(face[36][0] * w), int(face[36][1] * h))
+                    left_eye_center = (int(np.mean(face[30:33, 0]) * w), int(np.mean(face[30:33, 1]) * h))
+                    right_eye_center = (int(np.mean(face[33:36, 0]) * w), int(np.mean(face[33:36, 1]) * h))
+                    eye_dist = max(20, int(np.linalg.norm(np.array(left_eye_center) - np.array(right_eye_center))))
+                    head_center = (nose_pt[0], nose_pt[1] - max(8, int(eye_dist * 0.18)))
+                    head_rx = max(44, int(eye_dist * 1.35))
+                    head_ry = max(56, int(eye_dist * 1.70))
+                    chin_x, chin_y = head_center[0], head_center[1] + head_ry
+                else:
+                    chin_x, chin_y = w // 2, int(h * 0.46)
+                    head_center = (chin_x, int(h * 0.36))
+                    eye_dist = 40
+                    left_eye_center = (chin_x - 20, head_center[1] - 4)
+                    right_eye_center = (chin_x + 20, head_center[1] - 4)
+                    head_rx, head_ry = 50, 65
+
+            # Polígono trapezoidal sólido de la camiseta negra conectándose DIRECTAMENTE bajo la barbilla (landmark 152)
             neck_hw = max(18, int(sh_dist * 0.16))
+            shirt_top_y = chin_y - 2
             shirt_poly = np.array([
-                [neck[0] - neck_hw, neck[1] - 8],
+                [chin_x - neck_hw, shirt_top_y],
                 [ls[0] - 15, ls[1]],
                 [ls[0] - 40, h],
                 [rs[0] + 40, h],
                 [rs[0] + 15, rs[1]],
-                [neck[0] + neck_hw, neck[1] - 8]
+                [chin_x + neck_hw, shirt_top_y]
             ], dtype=np.int32)
             cv2.fillPoly(canvas, [shirt_poly], color_camiseta, cv2.LINE_AA)
-
-            # Cuello en V sutil
-            v_neck = np.array([
-                [neck[0] - neck_hw, neck[1] - 8],
-                [neck[0], neck[1] + int(neck_hw * 0.65)],
-                [neck[0] + neck_hw, neck[1] - 8]
-            ], dtype=np.int32)
-            cv2.fillPoly(canvas, [v_neck], color_piel, cv2.LINE_AA)
-            cv2.polylines(canvas, [v_neck], False, (50, 45, 45), 2, cv2.LINE_AA)
 
             # Mangas cortas de la camiseta y antebrazos en color piel
             sleeve_l_end = (int(ls[0] + 0.45 * (le[0] - ls[0])), int(ls[1] + 0.45 * (le[1] - ls[1])))
@@ -386,64 +431,56 @@ class LSPVisionService:
             cv2.line(canvas, sleeve_r_end, rw, color_piel, 14, cv2.LINE_AA)
             cv2.line(canvas, sleeve_r_end, rw, color_piel_borde, 2, cv2.LINE_AA)
 
-            # --- B. Cuello, Rostro y Cabello (Inspirado en Avatar.png) ---
-            FACEMESH_CONTOUR = [
-                10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378,
-                400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21,
-                54, 103, 67, 109
-            ]
-
+            # --- B. Rostro y Cabello (Inspirado en Avatar.png, cuello acortado estilizado) ---
             if hlm is not None:
-                # Contorno facial exacto usando los landmarks de MediaPipe
-                face_pts = np.array([[int(hlm[idx].x * w), int(hlm[idx].y * h)] for idx in FACEMESH_CONTOUR], dtype=np.int32)
-                head_center = (int(np.mean(face_pts[:, 0])), int(np.mean(face_pts[:, 1])))
-                chin_pt = (int(hlm[152].x * w), int(hlm[152].y * h))
-                left_eye_center = (int(hlm[159].x * w), int(hlm[159].y * h))
-                right_eye_center = (int(hlm[386].x * w), int(hlm[386].y * h))
-                eye_dist = max(20, int(np.linalg.norm(np.array(left_eye_center) - np.array(right_eye_center))))
-
-                # Cuello que conecta barbilla a la camiseta
-                neck_pts = np.array([
-                    [head_center[0] - 22, chin_pt[1] - 10],
-                    [head_center[0] + 22, chin_pt[1] - 10],
-                    [neck[0] + neck_hw, neck[1] + 4],
-                    [neck[0] - neck_hw, neck[1] + 4]
-                ], dtype=np.int32)
-                cv2.fillPoly(canvas, [neck_pts], color_piel, cv2.LINE_AA)
-
-                # Rostro relleno en color piel cálido (#FCE2C6)
+                # Rostro relleno en color piel cálido (#FCE2C6) conectando directamente sobre la camiseta
                 cv2.fillPoly(canvas, [face_pts], color_piel, cv2.LINE_AA)
                 cv2.polylines(canvas, [face_pts], True, color_piel_borde, 2, cv2.LINE_AA)
 
-                # Cabello de "Palitos" Minimalista Infantil (3 a 5 trazos de caricatura basados en landmark 10)
-                top_x, top_y = int(hlm[10].x * w), int(hlm[10].y * h)
-                cv2.line(canvas, (top_x, top_y), (top_x, top_y - 35), (15, 18, 28), 4, cv2.LINE_AA)
-                cv2.line(canvas, (top_x - 14, top_y + 4), (top_x - 26, top_y - 28), (15, 18, 28), 4, cv2.LINE_AA)
-                cv2.line(canvas, (top_x + 14, top_y + 4), (top_x + 26, top_y - 28), (15, 18, 28), 4, cv2.LINE_AA)
-                cv2.line(canvas, (top_x - 26, top_y + 10), (top_x - 44, top_y - 18), (15, 18, 28), 4, cv2.LINE_AA)
-                cv2.line(canvas, (top_x + 26, top_y + 10), (top_x + 44, top_y - 18), (15, 18, 28), 4, cv2.LINE_AA)
+                # Cabello Completo, Natural y Estilizado (Polígono cerrado en color oscuro estilo Avatar.png)
+                # Basado en landmarks 109, 67, 103 (izq), 336, 296, 334 (der) y landmark 10 con offset de volumen (30-40px)
+                top_pt = (int(hlm[10].x * w), int(hlm[10].y * h))
+                vol_offset = max(28, min(42, int(eye_dist * 0.75)))
+
+                hair_pts = [
+                    # Borde temporal / oreja izquierda
+                    [int(hlm[162].x * w), int(hlm[162].y * h)],
+                    [int(hlm[21].x * w), int(hlm[21].y * h)],
+                    [int(hlm[54].x * w), int(hlm[54].y * h)],
+                    # Límite superior de cejas / frente izquierda (landmarks 103, 67, 109)
+                    [int(hlm[103].x * w), int(hlm[103].y * h) - 2],
+                    [int(hlm[67].x * w), int(hlm[67].y * h) - 4],
+                    [int(hlm[109].x * w), int(hlm[109].y * h) - 4],
+                    # Centro de la frente
+                    [top_pt[0], top_pt[1] + 4],
+                    # Límite superior de cejas / frente derecha (landmarks 336, 296, 334)
+                    [int(hlm[336].x * w), int(hlm[336].y * h) - 4],
+                    [int(hlm[296].x * w), int(hlm[296].y * h) - 4],
+                    [int(hlm[334].x * w), int(hlm[334].y * h) - 2],
+                    # Borde temporal / oreja derecha
+                    [int(hlm[284].x * w), int(hlm[284].y * h)],
+                    [int(hlm[251].x * w), int(hlm[251].y * h)],
+                    [int(hlm[389].x * w), int(hlm[389].y * h)],
+                    # Cúpula externa con volumen superior (30-40px sobre landmark 10)
+                    [int(hlm[389].x * w) + 6, int(hlm[389].y * h) - 6],
+                    [int(hlm[251].x * w) + 8, int(hlm[251].y * h) - int(vol_offset * 0.35)],
+                    [int(hlm[284].x * w) + 8, int(hlm[284].y * h) - int(vol_offset * 0.65)],
+                    [int(hlm[334].x * w) + 6, int(hlm[334].y * h) - int(vol_offset * 0.85)],
+                    [int(hlm[296].x * w) + 4, int(hlm[296].y * h) - vol_offset],
+                    [int(hlm[336].x * w) + 2, int(hlm[336].y * h) - vol_offset],
+                    [top_pt[0], top_pt[1] - vol_offset - 3],
+                    [int(hlm[109].x * w) - 2, int(hlm[109].y * h) - vol_offset],
+                    [int(hlm[67].x * w) - 4, int(hlm[67].y * h) - vol_offset],
+                    [int(hlm[103].x * w) - 6, int(hlm[103].y * h) - int(vol_offset * 0.85)],
+                    [int(hlm[54].x * w) - 8, int(hlm[54].y * h) - int(vol_offset * 0.65)],
+                    [int(hlm[21].x * w) - 8, int(hlm[21].y * h) - int(vol_offset * 0.35)],
+                    [int(hlm[162].x * w) - 6, int(hlm[162].y * h) - 6]
+                ]
+                hair_poly = np.array(hair_pts, dtype=np.int32)
+                cv2.fillPoly(canvas, [hair_poly], color_cabello, cv2.LINE_AA)
+                cv2.polylines(canvas, [hair_poly], True, (10, 12, 20), 2, cv2.LINE_AA)
 
             else:
-                # Respaldo geométrico de alta precisión con landmarks faciales de 37 puntos
-                face = landmarks.get("face") if landmarks else None
-                nose_pt = (int(face[36][0] * w), int(face[36][1] * h)) if face is not None else (neck[0], neck[1] - int(sh_dist * 0.45))
-                left_eye_center = (int(np.mean(face[30:33, 0]) * w), int(np.mean(face[30:33, 1]) * h)) if face is not None else (nose_pt[0] - 25, nose_pt[1] - 15)
-                right_eye_center = (int(np.mean(face[33:36, 0]) * w), int(np.mean(face[33:36, 1]) * h)) if face is not None else (nose_pt[0] + 25, nose_pt[1] - 15)
-                eye_dist = max(20, int(np.linalg.norm(np.array(left_eye_center) - np.array(right_eye_center))))
-
-                head_center = (nose_pt[0], nose_pt[1] - max(8, int(eye_dist * 0.18)))
-                head_rx = max(44, int(eye_dist * 1.35))
-                head_ry = max(56, int(eye_dist * 1.70))
-
-                # Cuello
-                neck_pts = np.array([
-                    [head_center[0] - 20, head_center[1] + int(head_ry * 0.65)],
-                    [head_center[0] + 20, head_center[1] + int(head_ry * 0.65)],
-                    [neck[0] + neck_hw, neck[1] + 4],
-                    [neck[0] - neck_hw, neck[1] + 4]
-                ], dtype=np.int32)
-                cv2.fillPoly(canvas, [neck_pts], color_piel, cv2.LINE_AA)
-
                 # Orejas
                 ear_r = max(9, int(head_ry * 0.22))
                 cv2.circle(canvas, (head_center[0] - head_rx + 2, head_center[1] + 2), ear_r, color_piel, -1, cv2.LINE_AA)
@@ -455,13 +492,33 @@ class LSPVisionService:
                 cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, color_piel, -1, cv2.LINE_AA)
                 cv2.ellipse(canvas, head_center, (head_rx, head_ry), 0, 0, 360, color_piel_borde, 2, cv2.LINE_AA)
 
-                # Cabello de "Palitos" Minimalista Infantil
+                # Cabello Completo, Natural y Estilizado (Polígono cerrado en color oscuro estilo Avatar.png)
                 top_x, top_y = head_center[0], head_center[1] - head_ry
-                cv2.line(canvas, (top_x, top_y), (top_x, top_y - 35), (15, 18, 28), 4, cv2.LINE_AA)
-                cv2.line(canvas, (top_x - 14, top_y + 4), (top_x - 26, top_y - 28), (15, 18, 28), 4, cv2.LINE_AA)
-                cv2.line(canvas, (top_x + 14, top_y + 4), (top_x + 26, top_y - 28), (15, 18, 28), 4, cv2.LINE_AA)
-                cv2.line(canvas, (top_x - 26, top_y + 10), (top_x - 44, top_y - 18), (15, 18, 28), 4, cv2.LINE_AA)
-                cv2.line(canvas, (top_x + 26, top_y + 10), (top_x + 44, top_y - 18), (15, 18, 28), 4, cv2.LINE_AA)
+                vol = 35
+                hair_pts = [
+                    [head_center[0] - int(head_rx * 0.95), head_center[1] - int(head_ry * 0.15)],
+                    [head_center[0] - int(head_rx * 0.80), head_center[1] - int(head_ry * 0.38)],
+                    [head_center[0] - int(head_rx * 0.50), head_center[1] - int(head_ry * 0.52)],
+                    [head_center[0] - int(head_rx * 0.25), head_center[1] - int(head_ry * 0.60)],
+                    [head_center[0], head_center[1] - int(head_ry * 0.55)],
+                    [head_center[0] + int(head_rx * 0.25), head_center[1] - int(head_ry * 0.60)],
+                    [head_center[0] + int(head_rx * 0.50), head_center[1] - int(head_ry * 0.52)],
+                    [head_center[0] + int(head_rx * 0.80), head_center[1] - int(head_ry * 0.38)],
+                    [head_center[0] + int(head_rx * 0.95), head_center[1] - int(head_ry * 0.15)],
+                    # Cúpula de volumen superior
+                    [head_center[0] + int(head_rx * 1.05), head_center[1] - int(head_ry * 0.35)],
+                    [head_center[0] + int(head_rx * 0.95), top_y],
+                    [head_center[0] + int(head_rx * 0.65), top_y - int(vol * 0.75)],
+                    [head_center[0] + int(head_rx * 0.30), top_y - int(vol * 0.95)],
+                    [head_center[0], top_y - vol],
+                    [head_center[0] - int(head_rx * 0.30), top_y - int(vol * 0.95)],
+                    [head_center[0] - int(head_rx * 0.65), top_y - int(vol * 0.75)],
+                    [head_center[0] - int(head_rx * 0.95), top_y],
+                    [head_center[0] - int(head_rx * 1.05), head_center[1] - int(head_ry * 0.35)]
+                ]
+                hair_poly = np.array(hair_pts, dtype=np.int32)
+                cv2.fillPoly(canvas, [hair_poly], color_cabello, cv2.LINE_AA)
+                cv2.polylines(canvas, [hair_poly], True, (10, 12, 20), 2, cv2.LINE_AA)
 
             # --- C. Animación Facial Dinámica (Cejas, Ojos con Brillo, Boca con Apertura) ---
 
@@ -490,13 +547,6 @@ class LSPVisionService:
                 cv2.circle(canvas, ec, pupil_r, color_azul_marino, -1, cv2.LINE_AA)
                 # Brillo blanco en esquina superior derecha
                 cv2.circle(canvas, (ec[0] + pupil_r // 3, ec[1] - pupil_r // 3), shine_r, color_blanco, -1, cv2.LINE_AA)
-
-            # 3. Mejillas sonrosadas pedagógicas
-            blush_r = max(7, int(eye_dist * 0.20))
-            blush_l = (int(left_eye_center[0] - eye_dist * 0.08), int(left_eye_center[1] + eye_dist * 0.36))
-            blush_r_pt = (int(right_eye_center[0] + eye_dist * 0.08), int(right_eye_center[1] + eye_dist * 0.36))
-            cv2.circle(canvas, blush_l, blush_r, color_mejillas, -1, cv2.LINE_AA)
-            cv2.circle(canvas, blush_r_pt, blush_r, color_mejillas, -1, cv2.LINE_AA)
 
             # 4. Boca dinámica con detección de apertura bucal en tiempo real
             if hlm is not None:

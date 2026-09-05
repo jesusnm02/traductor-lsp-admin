@@ -1,5 +1,8 @@
 import os
 import sys
+import json
+import threading
+import webbrowser
 import asyncio
 import atexit
 import flet as ft
@@ -10,6 +13,14 @@ if sys.platform.startswith("win"):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     except Exception:
         pass
+
+try:
+    import requests
+except ImportError:
+    requests = None
+
+# Constante de versión actual del software (solucion_scroll_y_auto_update_escritorio.md)
+CURRENT_VERSION = "1.0.0"
 
 from src.data_manager import LSPDatasetManager
 from src.model_trainer import LSPTrainer
@@ -24,7 +35,179 @@ MUESTRAS_DIR = os.path.join(DATA_DIR, "muestras")
 MODELOS_DIR = os.path.join(DATA_DIR, "modelos")
 
 os.makedirs(MUESTRAS_DIR, exist_ok=True)
-os.makedirs(MODELOS_DIR, exist_ok=True)
+def parse_semantic_version(v_str: str) -> list:
+    """Convierte un string de versión como '1.2.0' o 'v1.0' en una lista de enteros para comparación."""
+    try:
+        clean = str(v_str).strip().lstrip("vV")
+        parts = [int(x) for x in clean.split(".") if x.isdigit()]
+        while len(parts) < 3:
+            parts.append(0)
+        return parts
+    except Exception:
+        return [0, 0, 0]
+
+def check_for_updates_async(page: ft.Page, current_version: str = CURRENT_VERSION):
+    """
+    Ejecuta en segundo plano la verificación de versión en AWS S3.
+    Si se detecta una nueva versión en version.json, despliega un diálogo
+    de confirmación asíncrono para descargar automáticamente la nueva versión (.exe).
+    """
+    def _worker():
+        try:
+            bucket_name = os.getenv("AWS_BUCKET_NAME", "traductor-lsp-modelos-colegio")
+            s3_url = os.getenv("S3_VERSION_URL", f"https://{bucket_name}.s3.amazonaws.com/version.json")
+            
+            data = None
+            # 1. Consulta HTTP directa con requests
+            if requests is not None:
+                try:
+                    resp = requests.get(s3_url, timeout=4)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                except Exception:
+                    pass
+
+            # 2. Si falló la consulta HTTP pública, intentar fallback mediante boto3
+            if data is None:
+                try:
+                    import boto3
+                    ak = os.getenv("AWS_ACCESS_KEY_ID")
+                    sk = os.getenv("AWS_SECRET_ACCESS_KEY")
+                    region = os.getenv("AWS_REGION", "us-east-1")
+                    if ak and sk and bucket_name:
+                        s3_client = boto3.client(
+                            "s3",
+                            aws_access_key_id=ak,
+                            aws_secret_access_key=sk,
+                            region_name=region
+                        )
+                        s3_resp = s3_client.get_object(Bucket=bucket_name, Key="version.json")
+                        content = s3_resp["Body"].read().decode("utf-8")
+                        data = json.loads(content)
+                except Exception:
+                    pass
+
+            if not data or not isinstance(data, dict):
+                print("[AUTO-UPDATER] No se detectó versión remota en S3 o archivo inexistente.")
+                return
+
+            latest_version = str(data.get("latest_version", current_version)).strip()
+            download_url = data.get("download_url", "")
+            mandatory = bool(data.get("mandatory", False))
+            changelog = data.get("changelog", "Mejoras generales en la interfaz y reconocimiento de señas.")
+
+            if parse_semantic_version(latest_version) > parse_semantic_version(current_version):
+                print(f"[AUTO-UPDATER] ¡Nueva versión detectada! v{latest_version} (Actual: v{current_version})")
+
+                def _show_update_modal():
+                    try:
+                        def _on_download(e):
+                            try:
+                                if download_url:
+                                    if hasattr(page, "launch_url"):
+                                        page.launch_url(download_url)
+                                    else:
+                                        webbrowser.open(download_url)
+                            except Exception as dl_err:
+                                print(f"[AUTO-UPDATER] Error al abrir enlace de descarga: {dl_err}")
+                                if download_url:
+                                    webbrowser.open(download_url)
+
+                            if hasattr(page, "close"):
+                                page.close(dlg_update)
+                            else:
+                                dlg_update.open = False
+                                page.update()
+
+                        def _on_cancel(e):
+                            if hasattr(page, "close"):
+                                page.close(dlg_update)
+                            else:
+                                dlg_update.open = False
+                                page.update()
+
+                        actions = [
+                            ft.Button(
+                                content="Descargar e Instalar (.exe)",
+                                icon=ft.Icons.DOWNLOAD_ROUNDED,
+                                bgcolor="#0A66C2",
+                                color=ft.Colors.WHITE,
+                                on_click=_on_download
+                            )
+                        ]
+                        if not mandatory:
+                            actions.append(
+                                ft.Button(
+                                    content="Recordar Más Tarde",
+                                    bgcolor="#F1F5F9",
+                                    color="#1A365D",
+                                    on_click=_on_cancel
+                                )
+                            )
+
+                        dlg_update = ft.AlertDialog(
+                            modal=mandatory,
+                            title=ft.Row([
+                                ft.Icon(ft.Icons.SYSTEM_UPDATE_ROUNDED, color="#0A66C2", size=24),
+                                ft.Text("Actualización Disponible", weight=ft.FontWeight.BOLD, size=16, color="#1A365D")
+                            ], spacing=8),
+                            content=ft.Container(
+                                width=440,
+                                content=ft.Column([
+                                    ft.Text(f"Se ha detectado una nueva versión del sistema Traductor LSP para Windows.", size=13, color="#2D3748"),
+                                    ft.Container(height=4),
+                                    ft.Container(
+                                        content=ft.Row([
+                                            ft.Column([
+                                                ft.Text("Versión Instalada:", size=11, color="#64748B"),
+                                                ft.Text(f"v{current_version}", size=13, weight=ft.FontWeight.BOLD, color="#1A365D"),
+                                            ], spacing=1),
+                                            ft.Icon(ft.Icons.ARROW_FORWARD, color="#0A66C2", size=18),
+                                            ft.Column([
+                                                ft.Text("Nueva Versión:", size=11, color="#64748B"),
+                                                ft.Text(f"v{latest_version}", size=13, weight=ft.FontWeight.BOLD, color="#0A66C2"),
+                                            ], spacing=1),
+                                        ], alignment=ft.MainAxisAlignment.SPACE_AROUND, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                        padding=10,
+                                        bgcolor="#F1F5F9",
+                                        border_radius=8
+                                    ),
+                                    ft.Container(height=4),
+                                    ft.Text("Novedades y Mejoras:", size=12, weight=ft.FontWeight.BOLD, color="#1A365D"),
+                                    ft.Container(
+                                        content=ft.Text(changelog, size=11, color="#475569"),
+                                        padding=ft.Padding(8, 6, 8, 6),
+                                        bgcolor="#F8FAFC",
+                                        border=ft.Border.all(1, "#E2E8F0"),
+                                        border_radius=6
+                                    )
+                                ], spacing=6, tight=True)
+                            ),
+                            actions=actions,
+                            actions_alignment=ft.MainAxisAlignment.END
+                        )
+
+                        if hasattr(page, "open"):
+                            page.open(dlg_update)
+                        else:
+                            page.dialog = dlg_update
+                            dlg_update.open = True
+                            page.update()
+
+                    except Exception as modal_err:
+                        print(f"[AUTO-UPDATER] Error al desplegar diálogo de actualización: {modal_err}")
+
+                if hasattr(page, "run_thread"):
+                    page.run_thread(_show_update_modal)
+                else:
+                    _show_update_modal()
+            else:
+                print(f"[AUTO-UPDATER] Sistema al día (v{current_version}).")
+
+        except Exception as check_ex:
+            print(f"[AUTO-UPDATER] Excepción en comprobación de versión: {check_ex}")
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 def main(page: ft.Page):
     page.title = "Traductor LSP - Panel Escolar de Entrenamiento y Validación"
@@ -206,6 +389,9 @@ def main(page: ft.Page):
             tabs
         ], expand=True, spacing=4)
     )
+
+    # Iniciar verificación asíncrona de versiones en AWS S3 sin congelar la interfaz
+    check_for_updates_async(page)
 
     # Apagado coordinado en on_disconnect para detener bucles en segundo plano
     def on_disconnect(e=None):

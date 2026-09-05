@@ -189,36 +189,24 @@ class LSPUIController:
         self.vision_service.video_image_control = self.camera_view
 
     def create_camera_placeholder(self) -> ft.Container:
-        """Crea el componente visual estándar para el estado de cámara desactivada."""
+        """Contenedor negro minimalista para estado de cámara desactivada sin textos superpuestos."""
         return ft.Container(
-            content=ft.Column([
-                ft.Icon(ft.Icons.VIDEOCAM_OFF_ROUNDED, color="#D1E4F8", size=48),
-                ft.Text(
-                    "Cámara Desactivada. Presiona 'Prender Cámara' para iniciar.",
-                    color="#D1E4F8",
-                    size=13,
-                    weight=ft.FontWeight.W_500,
-                    text_align=ft.TextAlign.CENTER
-                )
-            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=10),
-            alignment=ft.Alignment.CENTER,
-            width=640,
-            height=480,
-            visible=True
+            width=480,
+            height=360,
+            bgcolor=ft.Colors.BLACK,
+            visible=False
         )
 
-    def create_standard_camera_container(self, placeholder_ctrl: ft.Container, camera_img: ft.Image) -> ft.Container:
-        """Crea el contenedor estandarizado 640x480 con borde celeste escolar #4A90E2 y fondo #1A365D."""
+    def create_standard_camera_container(self, camera_img_or_placeholder, camera_img=None) -> ft.Container:
+        """Crea el contenedor estandarizado 480x360 con borde celeste escolar #4A90E2 y fondo negro sólido."""
+        img = camera_img if camera_img is not None else camera_img_or_placeholder
         return ft.Container(
-            content=ft.Stack([
-                placeholder_ctrl,
-                camera_img
-            ]),
-            width=640,
-            height=480,
+            content=img,
+            width=480,
+            height=360,
             border_radius=12,
             border=ft.Border.all(3, "#4A90E2"),
-            bgcolor="#1A365D",
+            bgcolor=ft.Colors.BLACK,
             alignment=ft.Alignment.CENTER,
             clip_behavior=ft.ClipBehavior.HARD_EDGE
         )
@@ -310,20 +298,20 @@ class LSPUIController:
         )
         self.lbl_frames_val = ft.Text("30", size=12, weight=ft.FontWeight.BOLD, color=COLOR_PRIMARY)
 
-        # 4. Visores de Cámara Estandarizados (640x480, borde #4A90E2, fondo #1A365D)
+        # 4. Visores de Cámara Estandarizados (480x360, borde #4A90E2, fondo negro minimalista)
         self.camera_view = ft.Image(
             src=EMPTY_PIXEL_DATA,
-            width=640,
-            height=480,
+            width=480,
+            height=360,
             fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain",
-            visible=False
+            visible=True
         )
         self.test_camera_view = ft.Image(
             src=EMPTY_PIXEL_DATA,
-            width=640,
-            height=480,
+            width=480,
+            height=360,
             fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain",
-            visible=False
+            visible=True
         )
         self.placeholder_train = self.create_camera_placeholder()
         self.placeholder_test = self.create_camera_placeholder()
@@ -393,10 +381,10 @@ class LSPUIController:
 
         self.cloud_camera_image = ft.Image(
             src=EMPTY_PIXEL_DATA,
-            width=640,
-            height=480,
+            width=480,
+            height=360,
             fit=ft.BoxFit.CONTAIN if hasattr(ft, "BoxFit") else "contain",
-            visible=False
+            visible=True
         )
         self.placeholder_cloud = self.create_camera_placeholder()
         self.camera_container_cloud = self.create_standard_camera_container(self.placeholder_cloud, self.cloud_camera_image)
@@ -414,8 +402,8 @@ class LSPUIController:
             bgcolor="#2E7D32",
             color=ft.Colors.WHITE,
             on_click=self.toggle_cloud_camera,
-            height=38,
-            expand=True
+            height=36,
+            width=180
         )
         self.btn_cloud_snapshot = ft.Button(
             content="Tomar Foto",
@@ -423,7 +411,7 @@ class LSPUIController:
             bgcolor="#0284C7",
             color=ft.Colors.WHITE,
             on_click=self.cloud_take_photo_action,
-            height=38,
+            height=36,
             expand=True
         )
         self.btn_cloud_record = ft.Button(
@@ -432,7 +420,7 @@ class LSPUIController:
             bgcolor="#EF4444",
             color=ft.Colors.WHITE,
             on_click=self.cloud_start_recording_action,
-            height=38,
+            height=36,
             expand=True
         )
         self.btn_cloud_stop = ft.Button(
@@ -441,17 +429,17 @@ class LSPUIController:
             bgcolor="#64748B",
             color=ft.Colors.WHITE,
             on_click=self.cloud_stop_recording_action,
-            height=38,
+            height=36,
             disabled=True,
             expand=True
         )
         self.btn_cloud_preview = ft.Button(
-            content="Ver Vista Previa",
+            content="Vista Previa",
             icon=ft.Icons.VISIBILITY,
             bgcolor="#F1F5F9",
             color=COLOR_TEXT_TITLE,
             on_click=self.cloud_preview_action,
-            height=38,
+            height=36,
             expand=True
         )
         self.lbl_cloud_active_word = ft.Text(
@@ -472,6 +460,30 @@ class LSPUIController:
             color=COLOR_PRIMARY,
             weight=ft.FontWeight.W_500
         )
+
+        # 5d. Selector unificado para Control de Voz (optimizacion_diseno_y_voz_v2.md)
+        self.switch_comandos_voz = ft.Switch(
+            label="Activar Comandos de Voz",
+            value=False,
+            active_color=COLOR_PRIMARY,
+            label_text_style=ft.TextStyle(color=COLOR_TEXT_TITLE, size=12, weight=ft.FontWeight.W_600),
+            on_change=self.toggle_comandos_voz
+        )
+        # Compatibilidad hacia atrás con selectores previos
+        self.switch_voz_captura = self.switch_comandos_voz
+        self.switch_voz_grabacion = self.switch_comandos_voz
+
+        # Alias para compatibilidad con solucion_scroll_y_auto_update_escritorio.md y optimizacion_diseno_y_voz_v2.md
+        self.camera_image_container = self.camera_container_cloud
+        self.btn_capturar = self.btn_cloud_snapshot
+        self.btn_grabar = self.btn_cloud_record
+        self.btn_toggle_camara = self.btn_cloud_camera
+        self.switch_avatar_mode = self.switch_cloud_avatar
+        self.tomar_captura = self.cloud_take_photo_action
+        self.iniciar_grabacion = self.cloud_start_recording_action
+        self.detener_grabacion = self.cloud_stop_recording_action
+        self.panel_derecho_camara = None
+        self.feedback_container = None
 
         # 6. Botones de Acción (Pestaña 1)
         self.btn_camera = ft.Button(
@@ -2044,6 +2056,62 @@ class LSPUIController:
         self.lbl_cloud_cam_status.value = f"Modo visual: {mode_str}."
         update_ui_safely(self.lbl_cloud_cam_status)
 
+    def toggle_comandos_voz(self, e=None):
+        """Conmuta la escucha unificada de comandos de voz manos libres (optimizacion_diseno_y_voz_v2.md)."""
+        val = bool(self.switch_comandos_voz.value)
+        if hasattr(self, "switch_voz_captura") and self.switch_voz_captura is not self.switch_comandos_voz:
+            self.switch_voz_captura.value = val
+        if hasattr(self, "switch_voz_grabacion") and self.switch_voz_grabacion is not self.switch_comandos_voz:
+            self.switch_voz_grabacion.value = val
+        estado = "activados" if val else "desactivados"
+        show_snack_bar(self.page, f"Comandos de voz {estado}.")
+        update_ui_safely(self.switch_comandos_voz)
+        if val:
+            if getattr(self, "is_camera_active", False):
+                self.start_voice_commands_listener()
+            else:
+                self.lbl_voice_command_status.value = "🎙️ Comandos de voz listos (se activarán al encender la cámara)."
+                self.lbl_voice_command_status.color = COLOR_PRIMARY
+                update_ui_safely(self.lbl_voice_command_status)
+        else:
+            self.stop_voice_commands_listener()
+
+    def toggle_voice_capture(self, e=None):
+        """Compatibilidad con selector de captura por voz."""
+        self.toggle_comandos_voz(e)
+
+    def toggle_voice_record(self, e=None):
+        """Compatibilidad con selector de grabación por voz."""
+        self.toggle_comandos_voz(e)
+
+    def tomar_captura(self, e=None):
+        """Ejecuta la captura de foto para el avatar."""
+        return self.cloud_take_photo_action(e)
+
+    def iniciar_grabacion(self, e=None):
+        """Inicia la grabación de video para el avatar."""
+        return self.cloud_start_recording_action(e)
+
+    def detener_grabacion(self, e=None):
+        """Detiene la grabación de video y compila el recurso."""
+        return self.cloud_stop_recording_action(e)
+
+    def ejecutar_captura_manual(self, e=None):
+        """Alias para captura manual de foto."""
+        self.tomar_captura(e)
+
+    def ejecutar_grabacion_manual(self, e=None):
+        """Alias para inicio de grabación de avatar."""
+        self.iniciar_grabacion(e)
+
+    def toggle_camara_stream(self, e=None):
+        """Alias para encendido/apagado de cámara en panel S3."""
+        self.toggle_cloud_camera(e)
+
+    def toggle_avatar_mode(self, e=None):
+        """Alias para conmutar modo avatar."""
+        self.toggle_cloud_privacy_avatar(e)
+
     def cloud_take_photo_action(self, e=None):
         """Toma una foto estática PNG de la seña actual y la guarda localmente."""
         if not self.is_camera_active:
@@ -2182,6 +2250,12 @@ class LSPUIController:
             update_ui_safely(self.lbl_voice_command_status)
             return
 
+        if hasattr(self, "switch_comandos_voz") and not getattr(self.switch_comandos_voz, "value", False):
+            self.lbl_voice_command_status.value = "🎙️ Micrófono inactivo (Comandos de voz desactivados)."
+            self.lbl_voice_command_status.color = COLOR_TEXT_MUTED
+            update_ui_safely(self.lbl_voice_command_status)
+            return
+
         if getattr(self, "voice_listener_running", False):
             return
 
@@ -2204,7 +2278,9 @@ class LSPUIController:
                 except Exception:
                     pass
 
-                while getattr(self, "is_camera_active", False) and getattr(self, "voice_listener_running", False):
+                while (getattr(self, "is_camera_active", False) and 
+                       getattr(self, "voice_listener_running", False) and 
+                       getattr(self.switch_comandos_voz, "value", True)):
                     try:
                         audio = recognizer.listen(source, timeout=1, phrase_time_limit=2)
                         command = ""
@@ -2219,6 +2295,10 @@ class LSPUIController:
                         if not command:
                             continue
 
+                        if hasattr(self, "switch_comandos_voz") and not getattr(self.switch_comandos_voz, "value", True):
+                            print("[VOICE COMMAND] Switch de voz desactivado durante la escucha.")
+                            break
+
                         print(f"[VOICE COMMAND] Detectado: '{command}'")
 
                         def _notify(cmd_text):
@@ -2229,24 +2309,24 @@ class LSPUIController:
                         if "captura" in command or "foto" in command:
                             if self.page and hasattr(self.page, "run_thread"):
                                 self.page.run_thread(_notify, "Foto / Captura")
-                                self.page.run_thread(self.cloud_take_photo_action, None)
+                                self.page.run_thread(self.tomar_captura, None)
                             else:
                                 _notify("Foto / Captura")
-                                self.cloud_take_photo_action(None)
+                                self.tomar_captura(None)
                         elif "grabar" in command or "graba" in command:
                             if self.page and hasattr(self.page, "run_thread"):
                                 self.page.run_thread(_notify, "Grabar")
-                                self.page.run_thread(self.cloud_start_recording_action, None)
+                                self.page.run_thread(self.iniciar_grabacion, None)
                             else:
                                 _notify("Grabar")
-                                self.cloud_start_recording_action(None)
+                                self.iniciar_grabacion(None)
                         elif "no grabes" in command or "detener" in command or "alto" in command or "parar" in command:
                             if self.page and hasattr(self.page, "run_thread"):
                                 self.page.run_thread(_notify, "Detener")
-                                self.page.run_thread(self.cloud_stop_recording_action, None)
+                                self.page.run_thread(self.detener_grabacion, None)
                             else:
                                 _notify("Detener")
-                                self.cloud_stop_recording_action(None)
+                                self.detener_grabacion(None)
 
                     except (sr.WaitTimeoutError, sr.UnknownValueError):
                         continue
@@ -2270,10 +2350,10 @@ class LSPUIController:
             self.voice_listener_running = False
 
     def stop_voice_commands_listener(self):
-        """Detiene de forma cooperativa el hilo de reconocimiento de voz."""
+        """Detiene de forma cooperativa el hilo de reconocimiento de voz y libera el micrófono."""
         self.voice_listener_running = False
         if hasattr(self, "lbl_voice_command_status") and self.lbl_voice_command_status:
-            self.lbl_voice_command_status.value = "🎙️ Micrófono inactivo."
+            self.lbl_voice_command_status.value = "🎙️ Micrófono inactivo (Comandos de voz desactivados)."
             self.lbl_voice_command_status.color = COLOR_TEXT_MUTED
             update_ui_safely(self.lbl_voice_command_status)
 
@@ -2912,76 +2992,22 @@ def build_training_view(controller: LSPUIController) -> ft.Container:
         card_sliders
     ], spacing=10, width=410)
 
-    # Panel Derecho: Monitor de Video Controlado con Overlays HUD (Stitch principal.png)
-    monitor_camara = ft.Container(
-        content=ft.Column([
-            # Barra superior interna del monitor
-            ft.Row([
-                ft.Row([
-                    ft.Container(width=7, height=7, bgcolor="#10B981", border_radius=4),
-                    ft.Text("VISTA EN VIVO - MEDIAPIPE SKELETAL TRACKER", size=10, weight=ft.FontWeight.BOLD, color="#94A3B8")
-                ], spacing=6),
-                ft.Row([
-                    ft.Container(
-                        content=ft.Text("LSP MODEL v2.4", size=9, weight=ft.FontWeight.BOLD, color="#94A3B8"),
-                        bgcolor="#1E293B",
-                        border_radius=4,
-                        padding=ft.Padding(5, 2, 5, 2)
-                    ),
-                    ft.Container(
-                        content=ft.Row([
-                            ft.Icon(ft.Icons.LOCK, size=10, color="#10B981"),
-                            ft.Text("CALIBRADO", size=9, weight=ft.FontWeight.BOLD, color="#10B981")
-                        ], spacing=3),
-                        bgcolor="#064E3B",
-                        border_radius=4,
-                        padding=ft.Padding(5, 2, 5, 2)
-                    )
-                ], spacing=6)
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            
-            # Imagen de la Cámara Estandarizada (640x480)
-            ft.Container(
-                content=ft.Column([
-                    controller.warning_banner,
-                    controller.camera_container_train
-                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=2),
-                alignment=ft.Alignment.CENTER
-            ),
-
-            # Barra inferior interna de HUD
-            ft.Row([
-                # HUD Izquierdo: Métricas y Estado
-                ft.Container(
-                    content=ft.Column([
-                        ft.Row([
-                            controller.lbl_hud_fps,
-                            controller.lbl_hud_conf,
-                            controller.lbl_hud_hand
-                        ], spacing=8),
-                        controller.lbl_hud_status
-                    ], spacing=2),
-                    bgcolor="#1E293B",
-                    border_radius=6,
-                    padding=ft.Padding(8, 4, 8, 4)
-                ),
-                # HUD Derecho: Patrón Objetivo
-                ft.Container(
-                    content=ft.Row([
-                        controller.lbl_hud_target,
-                        ft.Icon(ft.Icons.PAN_TOOL_ALT, size=14, color="#38BDF8")
-                    ], spacing=4),
-                    bgcolor="#1E293B",
-                    border_radius=6,
-                    padding=ft.Padding(8, 6, 8, 6)
-                )
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-        ], spacing=6),
-        bgcolor=COLOR_DARK_MONITOR,
-        border=ft.Border.all(2, COLOR_BORDER),
-        border_radius=12,
-        padding=10,
-        width=640
+    # Panel Derecho: Monitor de Video Estandarizado (480x360) sin textos sobrepuestos
+    camera_panel_train = ft.Column(
+        controls=[
+            controller.warning_banner,
+            controller.camera_container_train,
+            ft.Row(
+                controls=[
+                    controller.btn_camera,
+                    controller.btn_generate_cnn
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                spacing=14
+            )
+        ],
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        spacing=15
     )
 
     columna_derecha = ft.Container(
@@ -2990,16 +3016,12 @@ def build_training_view(controller: LSPUIController) -> ft.Container:
                 ft.Text("Monitor de Captura y Tracking 3D", size=14, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
                 ft.Row([controller.switch_voice, controller.voice_badge], spacing=4)
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            monitor_camara,
-            ft.Row([
-                controller.btn_camera,
-                controller.btn_generate_cnn
-            ], alignment=ft.MainAxisAlignment.CENTER, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=14)
-        ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            camera_panel_train
+        ], spacing=15, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
         bgcolor=COLOR_CARD_BG,
         border=ft.Border.all(1, COLOR_BORDER),
         border_radius=12,
-        padding=14,
+        padding=16,
         expand=True
     )
 
@@ -3107,62 +3129,13 @@ def build_live_testing_view(controller: LSPUIController) -> ft.Container:
         card_tech_info
     ], spacing=10, width=340)
 
-    # Panel Derecho: Monitor de Inferencia + Tarjeta Gigante
-    monitor_test = ft.Container(
-        content=ft.Column([
-            # Header del monitor
-            ft.Row([
-                ft.Row([
-                    ft.Container(width=7, height=7, bgcolor=COLOR_REC_BTN, border_radius=4),
-                    ft.Text("CÁMARA DOCENTE EN VIVO", size=10, weight=ft.FontWeight.BOLD, color="#F8FAFC"),
-                    ft.Container(
-                        content=ft.Text("21 Landmarks 3D", size=9, color="#94A3B8"),
-                        bgcolor="#1E293B",
-                        border_radius=4,
-                        padding=ft.Padding(5, 2, 5, 2)
-                    )
-                ], spacing=6),
-                ft.Text("FPS: 25.0   Resolución: 640x480", size=10, color="#94A3B8")
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            
-            # Imagen de video Estandarizada (640x480)
-            ft.Container(
-                content=controller.camera_container_test,
-                alignment=ft.Alignment.CENTER
-            ),
-
-            # Barra inferior del monitor
-            ft.Row([
-                ft.Row([
-                    ft.Container(
-                        content=ft.Text("Pausar Captura", size=10, color="#E2E8F0"),
-                        bgcolor="#1E293B",
-                        border_radius=4,
-                        padding=ft.Padding(6, 3, 6, 3)
-                    ),
-                    ft.Container(
-                        content=ft.Text("Ocultar Malla", size=10, color="#E2E8F0"),
-                        bgcolor="#1E293B",
-                        border_radius=4,
-                        padding=ft.Padding(6, 3, 6, 3)
-                    )
-                ], spacing=6),
-                ft.Container(
-                    content=ft.Row([
-                        ft.Icon(ft.Icons.PAN_TOOL, size=12, color=COLOR_PRIMARY),
-                        ft.Text("Mano en Cuadro: Derecha (Principal)", size=10, weight=ft.FontWeight.BOLD, color="#93C5FD")
-                    ], spacing=4),
-                    bgcolor="#1E293B",
-                    border_radius=4,
-                    padding=ft.Padding(6, 3, 6, 3)
-                )
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-        ], spacing=6),
-        bgcolor=COLOR_DARK_MONITOR,
-        border=ft.Border.all(2, COLOR_BORDER),
-        border_radius=12,
-        padding=10,
-        width=640
+    # Panel Derecho: Monitor de Inferencia Estandarizado (480x360) + Tarjeta Gigante
+    camera_panel_test = ft.Column(
+        controls=[
+            controller.camera_container_test
+        ],
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        spacing=12
     )
 
     # Tarjeta de Traducción Gigante (Tipografía 45px - Stitch test.png)
@@ -3219,14 +3192,16 @@ def build_live_testing_view(controller: LSPUIController) -> ft.Container:
         border=ft.Border.all(2, COLOR_BORDER),
         border_radius=12,
         padding=14,
-        width=640
+        width=None,
+        expand=True
     )
+    controller.feedback_container = tarjeta_gigante
 
     columna_derecha_test = ft.Container(
         content=ft.Column([
-            monitor_test,
+            ft.Row([camera_panel_test], alignment=ft.MainAxisAlignment.CENTER),
             tarjeta_gigante
-        ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+        ], spacing=12, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
         bgcolor=COLOR_CARD_BG,
         border=ft.Border.all(1, COLOR_BORDER),
         border_radius=12,
@@ -3383,37 +3358,42 @@ def build_cloud_view(controller: LSPUIController) -> ft.Container:
         card_console
     ], spacing=10, width=600)
 
-    # 2. Columna Derecha (Flexible): Captura del Tutor Inteligente (Avatar / Persona)
-    monitor_cloud = ft.Container(
+    # 2. Columna Derecha (Flexible): Captura del Tutor Inteligente con Scroll Adaptable
+    container_switches_voz = ft.Container(
+        width=480,
+        padding=ft.Padding(16, 12, 16, 12),
+        border=ft.Border.all(1, "#D1E4F8"),
+        border_radius=10,
+        bgcolor="#FFFFFF",
         content=ft.Column([
             ft.Row([
                 ft.Row([
-                    ft.Container(width=7, height=7, bgcolor="#10B981", border_radius=4),
-                    ft.Text("STREAM TUTOR DIDÁCTICO - CAPTURA DIRECTA", size=10, weight=ft.FontWeight.BOLD, color="#94A3B8")
+                    ft.Icon(ft.Icons.MIC, size=18, color=COLOR_PRIMARY),
+                    ft.Text("Controles Manos Libres", size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE),
                 ], spacing=6),
-                ft.Text("FPS: 25.0  •  Resolución: 640x480", size=10, color="#94A3B8")
+                ft.Container(
+                    content=ft.Text("Voz Activa", size=10, weight=ft.FontWeight.BOLD, color=COLOR_PRIMARY),
+                    bgcolor=COLOR_PRIMARY_LIGHT,
+                    border_radius=6,
+                    padding=ft.Padding(6, 2, 6, 2)
+                )
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ft.Container(
-                content=controller.camera_container_cloud,
-                alignment=ft.Alignment.CENTER
-            ),
-            controller.progress_cloud_compile,
-            ft.Row([
-                controller.lbl_cloud_cam_status
-            ], alignment=ft.MainAxisAlignment.START)
-        ], spacing=6),
-        bgcolor=COLOR_DARK_MONITOR,
-        border=ft.Border.all(2, COLOR_BORDER),
-        border_radius=12,
-        padding=10
+            controller.switch_comandos_voz,
+            ft.Text("Diga 'captura' / 'foto', 'grabar' o 'detener' / 'no grabes' para operar sin teclado.", size=11, color=COLOR_TEXT_MUTED)
+        ], spacing=6)
     )
 
-    card_captura_s3 = ft.Container(
-        content=ft.Column([
+    panel_derecho_camara = ft.Column(
+        scroll=ft.ScrollMode.AUTO,
+        expand=True,
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        spacing=12,
+        controls=[
+            # 1. Cabecera del Panel con palabra activa
             ft.Row([
                 ft.Row([
                     ft.Icon(ft.Icons.VIDEOCAM_ROUNDED, color=COLOR_PRIMARY, size=20),
-                    ft.Text("Captura del Tutor Inteligente (Avatar / Persona)", size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
+                    ft.Text("Grabador de Recursos Didácticos", size=14, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_TITLE)
                 ], spacing=6),
                 ft.Container(
                     content=controller.lbl_cloud_active_word,
@@ -3421,18 +3401,45 @@ def build_cloud_view(controller: LSPUIController) -> ft.Container:
                     border_radius=6,
                     padding=ft.Padding(8, 4, 8, 4)
                 )
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            monitor_cloud,
-            ft.Row([
-                controller.btn_cloud_camera,
-                controller.switch_cloud_avatar
-            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Row([
-                controller.btn_cloud_snapshot,
-                controller.btn_cloud_record,
-                controller.btn_cloud_stop,
-                controller.btn_cloud_preview
-            ], spacing=8, wrap=True),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=480),
+
+            # 2. Visor de Cámara Negro Minimalista (480x360)
+            controller.camera_container_cloud,
+            controller.progress_cloud_compile,
+
+            # 3. Sliders de Habilitación de Comandos de Voz (Switches)
+            container_switches_voz,
+
+            # 4. Botonera de Acción Manual (Inmediatamente debajo)
+            ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_EVENLY,
+                controls=[
+                    controller.btn_cloud_snapshot,
+                    controller.btn_cloud_record,
+                    controller.btn_cloud_stop,
+                    controller.btn_cloud_preview
+                ],
+                spacing=8,
+                width=480
+            ),
+
+            # 5. Botones de Control de Hardware
+            ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    controller.btn_cloud_camera,
+                    controller.switch_cloud_avatar
+                ],
+                width=480
+            ),
+
+            # 6. Indicadores de Estado
+            ft.Row(
+                controls=[controller.lbl_cloud_cam_status],
+                alignment=ft.MainAxisAlignment.CENTER,
+                width=480
+            ),
             ft.Container(
                 content=ft.Row([
                     ft.Icon(ft.Icons.MIC_NONE, size=16, color=COLOR_PRIMARY),
@@ -3441,9 +3448,16 @@ def build_cloud_view(controller: LSPUIController) -> ft.Container:
                 bgcolor=COLOR_PRIMARY_LIGHT,
                 border=ft.Border.all(1, "#BAE6FD"),
                 border_radius=8,
-                padding=ft.Padding(10, 6, 10, 6)
+                padding=ft.Padding(10, 6, 10, 6),
+                width=480
             )
-        ], spacing=10),
+        ]
+    )
+
+    controller.panel_derecho_camara = panel_derecho_camara
+
+    card_captura_s3 = ft.Container(
+        content=panel_derecho_camara,
         bgcolor=COLOR_CARD_BG,
         border=ft.Border.all(1, COLOR_BORDER),
         border_radius=12,
